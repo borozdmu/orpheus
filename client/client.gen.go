@@ -981,6 +981,28 @@ type Accepted struct {
 	SessionID openapi_types.UUID `json:"session_id"`
 }
 
+// AccessContext Trusted connector snapshot for a new invocation. Never inferred from prompts or message metadata. Protected service scope changes return 409 service_scope_changed before execution.
+type AccessContext struct {
+	ContextObservedAt time.Time          `json:"context_observed_at"`
+	InvocationID      openapi_types.UUID `json:"invocation_id"`
+	ScopeContext      AccessScopeContext `json:"scope_context"`
+	Subject           AccessSubject      `json:"subject"`
+}
+
+// AccessScopeContext defines model for AccessScopeContext.
+type AccessScopeContext struct {
+	AgentID          string   `json:"agent_id"`
+	AudienceSubjects []string `json:"audience_subjects"`
+	ChannelID        string   `json:"channel_id"`
+	PolicySpaceID    string   `json:"policy_space_id"`
+}
+
+// AccessSubject defines model for AccessSubject.
+type AccessSubject struct {
+	ID        string `json:"id"`
+	Namespace string `json:"namespace"`
+}
+
 // AccountLimitBucket defines model for AccountLimitBucket.
 type AccountLimitBucket struct {
 	LimitID              string              `json:"limit_id"`
@@ -1153,6 +1175,9 @@ type ConfigurationInput struct {
 
 // CreateRun defines model for CreateRun.
 type CreateRun struct {
+	// AccessContext Trusted connector snapshot for a new invocation. Never inferred from prompts or message metadata. Protected service scope changes return 409 service_scope_changed before execution.
+	AccessContext *AccessContext `json:"access_context,omitempty"`
+
 	// Env Explicit environment variables available only to this run's before_run and after_run hooks. Override session sources with the same names; never passed to the harness, after_create, or before_remove.
 	Env *map[string]string `json:"env,omitempty"`
 
@@ -1171,6 +1196,9 @@ type CreateRun struct {
 
 // CreateSession defines model for CreateSession.
 type CreateSession struct {
+	// AccessContext Trusted connector snapshot for a new invocation. Never inferred from prompts or message metadata. Protected service scope changes return 409 service_scope_changed before execution.
+	AccessContext *AccessContext `json:"access_context,omitempty"`
+
 	// AllowMultipleRuns Immutable session policy. If false, only the run created with the session is allowed and its sandbox is deleted after completion, failure or cancellation. If true, the sandbox is paused for subsequent runs. Recovery and messages within the current run are allowed in either mode.
 	AllowMultipleRuns *bool              `json:"allow_multiple_runs,omitempty"`
 	Configuration     ConfigurationInput `json:"configuration"`
@@ -1317,6 +1345,11 @@ type HooksInput struct {
 
 	// TimeoutSeconds Timeout for each hook invocation.
 	TimeoutSeconds *int `json:"timeout_seconds,omitempty"`
+}
+
+// InputAccessContext Confirmed authors of every message in order, checked against the active run snapshot without issuing another credential.
+type InputAccessContext struct {
+	InputSubjects []AccessSubject `json:"input_subjects"`
 }
 
 // JSONResult defines model for JSONResult.
@@ -1548,6 +1581,9 @@ type SandboxStateState string
 
 // SendMessage defines model for SendMessage.
 type SendMessage struct {
+	// AccessContext Confirmed authors of every message in order, checked against the active run snapshot without issuing another credential.
+	AccessContext *InputAccessContext `json:"access_context,omitempty"`
+
 	// Messages Ordered user messages accepted atomically for the active run.
 	Messages []TextMessage `json:"messages"`
 }
