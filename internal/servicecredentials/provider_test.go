@@ -138,3 +138,56 @@ func TestProviderConfigAndExpiry(t *testing.T) {
 		t.Fatal("lease boundary")
 	}
 }
+
+func TestProviderClockSkewLimits(t *testing.T) {
+	now := time.Date(2026, 10, 11, 15, 0, 0, 0, time.UTC)
+	for _, test := range []struct {
+		name            string
+		lease, deadline time.Duration
+		valid           bool
+	}{
+		{"aligned", 300 * time.Second, 1200 * time.Second, true},
+		{"provider ahead", 303 * time.Second, 1203 * time.Second, true},
+		{"provider behind", 297 * time.Second, 1197 * time.Second, true},
+		{"exact tolerance", 305 * time.Second, 1205 * time.Second, true},
+		{"lease beyond tolerance", 305*time.Second + time.Nanosecond, 1200 * time.Second, false},
+		{"deadline beyond tolerance", 300 * time.Second, 1205*time.Second + time.Nanosecond, false},
+		{"expired at boundary", 0, 900 * time.Second, false},
+		{"recently expired", -time.Nanosecond, 900 * time.Second, false},
+		{"lease beyond deadline", 2 * time.Second, time.Second, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			g := Grant{ExpiresAt: now.Add(test.lease), RunExpiresAt: now.Add(test.deadline)}
+			if g.validLifetime(now) != test.valid {
+				t.Fatalf("validLifetime = %v, want %v", g.validLifetime(now), test.valid)
+			}
+			state := State{Entries: map[string]Entry{"kord": {Grant: g}}}
+			if !state.Expired(g.ExpiresAt) || !state.Expired(g.RunExpiresAt) {
+				t.Fatal("clock tolerance extended the execution lifetime")
+			}
+		})
+	}
+}
+
+func TestIssueAndRenewPreserveProviderTimestampsWithClockSkew(t *testing.T) {
+	t.Setenv("TEST_PROVIDER_KEY", strings.Repeat("k", 32))
+	providerNow := time.Now().UTC().Add(3 * time.Second)
+	grant := testGrant()
+	grant.ExpiresAt = providerNow.Add(300 * time.Second)
+	grant.RunExpiresAt = providerNow.Add(1200 * time.Second)
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(grant)
+	}))
+	defer server.Close()
+	c := Client{HTTP: server.Client()}
+	cfg := testConfig(server.URL)
+	access := session.AccessContext{InvocationID: uuid.New()}
+	issued, err := c.Issue(t.Context(), cfg, "kord", access)
+	if err != nil || issued != grant {
+		t.Fatal("issue changed or rejected provider timestamps", err)
+	}
+	renewed, err := c.Renew(t.Context(), cfg, "kord", access.InvocationID, issued)
+	if err != nil || renewed != grant {
+		t.Fatal("renew changed or rejected provider timestamps", err)
+	}
+}
