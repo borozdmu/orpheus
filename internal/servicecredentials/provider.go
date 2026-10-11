@@ -53,6 +53,17 @@ type Grant struct {
 	RunExpiresAt time.Time `json:"run_expires_at"`
 	ScopeKey     string    `json:"scope_key"`
 }
+
+// Providers and workers run on different hosts. This tolerance only bounds a
+// future timestamp; it never extends an expired grant or changes its deadline.
+const maxProviderClockSkew = 5 * time.Second
+
+func (g Grant) validLifetime(now time.Time) bool {
+	return now.Before(g.ExpiresAt) && !g.ExpiresAt.After(g.RunExpiresAt) &&
+		!g.ExpiresAt.After(now.Add(300*time.Second+maxProviderClockSkew)) &&
+		!g.RunExpiresAt.After(now.Add(1200*time.Second+maxProviderClockSkew))
+}
+
 type Entry struct {
 	Config Config `json:"config"`
 	Grant  Grant  `json:"grant"`
@@ -123,7 +134,7 @@ func (c Client) call(ctx context.Context, cfg Config, body any) (Grant, error) {
 		return fail()
 	}
 	now := time.Now()
-	if len(out.CredentialID) == 0 || len(out.CredentialID) > 256 || len(out.ScopeKey) == 0 || len(out.ScopeKey) > 1024 || len(out.AccessToken) == 0 || len(out.AccessToken) > 8192 || strings.ContainsAny(out.AccessToken, "\x00\r\n") || !now.Before(out.ExpiresAt) || out.ExpiresAt.After(out.RunExpiresAt) || out.ExpiresAt.After(now.Add(300*time.Second)) || out.RunExpiresAt.After(now.Add(1200*time.Second)) {
+	if len(out.CredentialID) == 0 || len(out.CredentialID) > 256 || len(out.ScopeKey) == 0 || len(out.ScopeKey) > 1024 || len(out.AccessToken) == 0 || len(out.AccessToken) > 8192 || strings.ContainsAny(out.AccessToken, "\x00\r\n") || !out.validLifetime(now) {
 		return fail()
 	}
 	return out, nil
