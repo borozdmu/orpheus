@@ -5,7 +5,7 @@ FROM node:24.14.0-bookworm-slim AS node
 RUN npm install --global @redocly/cli@2.54.0
 FROM python:3.10.19-slim-bookworm AS python
 FROM sqlc/sqlc:1.31.1 AS sqlc
-FROM golang:1.27.1-bookworm
+FROM golang:1.27.2-bookworm
 COPY --from=sqlc /workspace/sqlc /usr/local/bin/sqlc
 COPY --from=hadolint /bin/hadolint /usr/local/bin/hadolint
 COPY --from=trivy /usr/local/bin/trivy /usr/local/bin/trivy
@@ -15,9 +15,9 @@ COPY --from=node /usr/local/lib/node_modules /usr/local/lib/node_modules
 COPY --from=python /usr/local /usr/local
 RUN ln -s /usr/local/lib/node_modules/@redocly/cli/bin/cli.js /usr/local/bin/redocly
 RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache/go-build \
-    go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.13.2 && \
+    go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.14.0 && \
     go install golang.org/x/vuln/cmd/govulncheck@v1.8.0 && \
-    go install golang.org/x/tools/cmd/goimports@v0.48.0
+    go install golang.org/x/tools/cmd/goimports@v0.50.0
 WORKDIR /app
 ARG ORPHEUS_UID=1000
 ARG ORPHEUS_GID=1000
