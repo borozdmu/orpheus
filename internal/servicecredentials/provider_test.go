@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -37,13 +39,22 @@ func TestIssueProjectionRenewIdentityAndRedaction(t *testing.T) {
 	defer server.Close()
 	c := Client{HTTP: server.Client()}
 	cfg := testConfig(server.URL)
-	access := session.AccessContext{InvocationID: uuid.New(), Subject: session.AccessSubject{Namespace: "mm", ID: "a"}, ScopeContext: session.AccessScopeContext{AudienceSubjects: []string{"a", "b"}, ChannelID: "c", AgentID: "bot", PolicySpaceID: "p"}, ContextObservedAt: time.Now()}
+	access := session.AccessContext{InvocationID: uuid.New(), Subject: session.AccessSubject{Namespace: "mm", ID: "a"}, ScopeContext: session.AccessScopeContext{"audience_subjects": json.RawMessage(`["a","b"]`), "channel_id": json.RawMessage(`"c"`), "agent_id": json.RawMessage(`"bot"`), "policy_space_id": json.RawMessage(`"p"`)}, ContextObservedAt: time.Now(), AllowedInputSubjects: []session.AccessSubject{{Namespace: "mm", ID: "b"}}}
 	got, err := c.Issue(t.Context(), cfg, "kord", access)
 	if err != nil || got != grant {
 		t.Fatal(got, err)
 	}
 	if len(requests[0]) != 7 {
 		t.Fatal("unexpected issue projection", requests[0])
+	}
+	for field, value := range map[string]any{"operation": "issue", "service": "kord", "invocation_id": access.InvocationID, "subject": access.Subject, "scope_context": access.ScopeContext, "context_observed_at": access.ContextObservedAt} {
+		want, err := json.Marshal(value)
+		if err != nil || string(requests[0][field]) != string(want) {
+			t.Fatalf("provider field %s changed: %s, want %s (%v)", field, requests[0][field], want, err)
+		}
+	}
+	if _, exists := requests[0]["allowed_input_subjects"]; exists {
+		t.Fatal("core input authority leaked to provider")
 	}
 	for range 2 {
 		if _, err := c.Renew(t.Context(), cfg, "kord", access.InvocationID, got); err != nil {
@@ -66,6 +77,50 @@ func TestIssueProjectionRenewIdentityAndRedaction(t *testing.T) {
 	grant.RunExpiresAt = grant.RunExpiresAt.Add(time.Second)
 	if _, err := c.Renew(t.Context(), cfg, "kord", access.InvocationID, got); err == nil {
 		t.Fatal("accepted moved absolute deadline")
+	}
+}
+
+func TestIssueHonorsEveryConfiguredProjectionSubset(t *testing.T) {
+	t.Setenv("TEST_PROVIDER_KEY", strings.Repeat("k", 32))
+	access := session.AccessContext{InvocationID: uuid.New(), Subject: session.AccessSubject{Namespace: "scheduler", ID: "cron"}, ScopeContext: session.AccessScopeContext{"job_id": json.RawMessage(`9007199254740993`), "nested": json.RawMessage(`{"value":1.2300e99}`)}, ContextObservedAt: time.Now(), AllowedInputSubjects: []session.AccessSubject{{Namespace: "users", ID: "operator"}}}
+	var input map[string]json.RawMessage
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		input = nil
+		if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+			t.Error(err)
+		}
+		_ = json.NewEncoder(w).Encode(testGrant())
+	}))
+	defer server.Close()
+	for mask := range 8 {
+		cfg := testConfig(server.URL)
+		cfg.ContextFields = nil
+		for i, field := range projection {
+			if mask&(1<<i) != 0 {
+				cfg.ContextFields = append(cfg.ContextFields, field)
+			}
+		}
+		if _, err := (Client{HTTP: server.Client()}).Issue(t.Context(), cfg, "source", access); err != nil {
+			t.Fatal(mask, err)
+		}
+		if len(input) != 4+len(cfg.ContextFields) {
+			t.Fatal("unexpected projection", mask, input)
+		}
+		for _, field := range projection {
+			_, exists := input[field]
+			if exists != slices.Contains(cfg.ContextFields, field) {
+				t.Fatal("projection ignored", mask, field)
+			}
+		}
+		if _, exists := input["allowed_input_subjects"]; exists {
+			t.Fatal("core input authority leaked to provider")
+		}
+		if raw, exists := input["scope_context"]; exists {
+			var scope session.AccessScopeContext
+			if err := json.Unmarshal(raw, &scope); err != nil || !reflect.DeepEqual(scope, access.ScopeContext) {
+				t.Fatal("opaque scope changed", string(raw), err)
+			}
+		}
 	}
 }
 func TestProviderRejectsUnsafeResponses(t *testing.T) {
@@ -113,7 +168,7 @@ func TestProviderConfigAndExpiry(t *testing.T) {
 	if err := good.Validate(); err != nil {
 		t.Fatal(err)
 	}
-	for _, field := range []string{"http", "userinfo", "query", "path", "projection", "secret"} {
+	for _, field := range []string{"http", "userinfo", "query", "path", "projection", "duplicate projection", "authority projection", "metadata projection", "secret"} {
 		c := good
 		switch field {
 		case "http":
@@ -126,6 +181,12 @@ func TestProviderConfigAndExpiry(t *testing.T) {
 			c.TokenFile = "~/../../tmp/token"
 		case "projection":
 			c.ContextFields = []string{"messages"}
+		case "duplicate projection":
+			c.ContextFields = []string{"subject", "subject"}
+		case "authority projection":
+			c.ContextFields = []string{"allowed_input_subjects"}
+		case "metadata projection":
+			c.ContextFields = []string{"metadata"}
 		case "secret":
 			c.SecretEnv = "BAD\nKEY"
 		}

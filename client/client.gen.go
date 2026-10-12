@@ -981,23 +981,24 @@ type Accepted struct {
 	SessionID openapi_types.UUID `json:"session_id"`
 }
 
-// AccessContext Trusted connector snapshot for a new invocation. Never inferred from prompts or message metadata. Protected service scope changes return 409 service_scope_changed before execution.
+// AccessContext Trusted caller snapshot for a new invocation. Never inferred from prompts or message metadata. Protected service scope changes return 409 service_scope_changed before execution.
 type AccessContext struct {
-	ContextObservedAt time.Time          `json:"context_observed_at"`
-	InvocationID      openapi_types.UUID `json:"invocation_id"`
-	ScopeContext      AccessScopeContext `json:"scope_context"`
-	Subject           AccessSubject      `json:"subject"`
+	// AllowedInputSubjects Frozen explicit allowlist for SendMessage during this run. Absent or empty denies interactive inputs. The initiating subject need not be listed. Never forwarded to credentials providers.
+	AllowedInputSubjects *[]AccessSubject   `json:"allowed_input_subjects,omitempty"`
+	ContextObservedAt    time.Time          `json:"context_observed_at"`
+	InvocationID         openapi_types.UUID `json:"invocation_id"`
+
+	// ScopeContext Opaque JSON object interpreted only by the selected credentials provider. Its serialized JSON must not exceed 1 MiB. Orpheus does not derive input permissions from this object.
+	ScopeContext AccessScopeContext `json:"scope_context"`
+
+	// Subject A namespaced human or service principal, supplied by a trusted caller.
+	Subject AccessSubject `json:"subject"`
 }
 
-// AccessScopeContext defines model for AccessScopeContext.
-type AccessScopeContext struct {
-	AgentID          string   `json:"agent_id"`
-	AudienceSubjects []string `json:"audience_subjects"`
-	ChannelID        string   `json:"channel_id"`
-	PolicySpaceID    string   `json:"policy_space_id"`
-}
+// AccessScopeContext Opaque JSON object interpreted only by the selected credentials provider. Its serialized JSON must not exceed 1 MiB. Orpheus does not derive input permissions from this object.
+type AccessScopeContext = map[string]json.RawMessage
 
-// AccessSubject defines model for AccessSubject.
+// AccessSubject A namespaced human or service principal, supplied by a trusted caller.
 type AccessSubject struct {
 	ID        string `json:"id"`
 	Namespace string `json:"namespace"`
@@ -1175,7 +1176,7 @@ type ConfigurationInput struct {
 
 // CreateRun defines model for CreateRun.
 type CreateRun struct {
-	// AccessContext Trusted connector snapshot for a new invocation. Never inferred from prompts or message metadata. Protected service scope changes return 409 service_scope_changed before execution.
+	// AccessContext Trusted caller snapshot for a new invocation. Never inferred from prompts or message metadata. Protected service scope changes return 409 service_scope_changed before execution.
 	AccessContext *AccessContext `json:"access_context,omitempty"`
 
 	// Env Explicit environment variables available only to this run's before_run and after_run hooks. Override session sources with the same names; never passed to the harness, after_create, or before_remove.
@@ -1196,7 +1197,7 @@ type CreateRun struct {
 
 // CreateSession defines model for CreateSession.
 type CreateSession struct {
-	// AccessContext Trusted connector snapshot for a new invocation. Never inferred from prompts or message metadata. Protected service scope changes return 409 service_scope_changed before execution.
+	// AccessContext Trusted caller snapshot for a new invocation. Never inferred from prompts or message metadata. Protected service scope changes return 409 service_scope_changed before execution.
 	AccessContext *AccessContext `json:"access_context,omitempty"`
 
 	// AllowMultipleRuns Immutable session policy. If false, only the run created with the session is allowed and its sandbox is deleted after completion, failure or cancellation. If true, the sandbox is paused for subsequent runs. Recovery and messages within the current run are allowed in either mode.
@@ -1347,7 +1348,7 @@ type HooksInput struct {
 	TimeoutSeconds *int `json:"timeout_seconds,omitempty"`
 }
 
-// InputAccessContext Confirmed authors of every message in order, checked against the active run snapshot without issuing another credential.
+// InputAccessContext Confirmed authors of every message in order, checked against the active run's allowed_input_subjects without issuing another credential.
 type InputAccessContext struct {
 	InputSubjects []AccessSubject `json:"input_subjects"`
 }
@@ -1581,7 +1582,7 @@ type SandboxStateState string
 
 // SendMessage defines model for SendMessage.
 type SendMessage struct {
-	// AccessContext Confirmed authors of every message in order, checked against the active run snapshot without issuing another credential.
+	// AccessContext Confirmed authors of every message in order, checked against the active run's allowed_input_subjects without issuing another credential.
 	AccessContext *InputAccessContext `json:"access_context,omitempty"`
 
 	// Messages Ordered user messages accepted atomically for the active run.

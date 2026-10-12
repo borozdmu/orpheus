@@ -52,7 +52,7 @@ func protectedFixture(t *testing.T) (*Store, Admission, *atomic.Int32, *atomic.B
 	s.Profiles.Services = map[string]config.Service{"kord": {Name: "Kord", Description: "Protected source", Provider: &servicecredentials.Config{Endpoint: server.URL, SecretEnv: "PROVIDER_TEST_KEY", TokenFile: "~/.kord/run.token", ContextFields: []string{"subject", "scope_context", "context_observed_at"}}}}
 	req := request()
 	req.Create.Configuration.Sandbox.Services = []string{"kord"}
-	req.Create.AccessContext = &session.AccessContext{InvocationID: uuid.New(), Subject: session.AccessSubject{Namespace: "mm", ID: "alice"}, ScopeContext: session.AccessScopeContext{AudienceSubjects: []string{"alice", "bob", "bot"}, ChannelID: "channel", AgentID: "bot", PolicySpaceID: "space"}, ContextObservedAt: time.Now().UTC()}
+	req.Create.AccessContext = &session.AccessContext{InvocationID: uuid.New(), Subject: session.AccessSubject{Namespace: "scheduler", ID: "nightly"}, ScopeContext: session.AccessScopeContext{"schedule": json.RawMessage(`"nightly"`), "workspace": json.RawMessage(`"support"`)}, AllowedInputSubjects: []session.AccessSubject{{Namespace: "users", ID: "bob"}}, ContextObservedAt: time.Now().UTC()}
 	return s, req, &calls, &unavailable, &changed
 }
 func TestProtectedAdmissionReplayScopeAndEncryption(t *testing.T) {
@@ -150,13 +150,13 @@ func TestProtectedActiveInputAuthorsAndServiceRemoval(t *testing.T) {
 	before := calls.Load()
 	_, err = s.Accept(t.Context(), input)
 	requireCode(t, err, "access_context_required")
-	input.InputSubjects = []session.AccessSubject{{Namespace: "mm", ID: "outsider"}}
+	input.InputSubjects = []session.AccessSubject{{Namespace: "users", ID: "outsider"}}
 	_, err = s.Accept(t.Context(), input)
 	requireCode(t, err, "input_subject_denied")
 	input.InputSubjects = []session.AccessSubject{{Namespace: "other", ID: "bob"}}
 	_, err = s.Accept(t.Context(), input)
 	requireCode(t, err, "input_subject_denied")
-	input.InputSubjects = []session.AccessSubject{{Namespace: "mm", ID: "bob"}}
+	input.InputSubjects = []session.AccessSubject{{Namespace: "users", ID: "bob"}}
 	msg, err := s.Accept(t.Context(), input)
 	if err != nil || calls.Load() != before {
 		t.Fatal("steer reissued", err)
@@ -227,5 +227,62 @@ func TestLegacySessionCannotAcquireProtectedMemory(t *testing.T) {
 	}
 	s.Profiles.Services["kord"] = provider
 	_, err = s.Accept(t.Context(), Admission{Key: uuid.New(), SessionID: a.SessionID, Messages: []session.TextMessage{{Text: "new protected query"}}, AccessContext: req.Create.AccessContext})
+	requireCode(t, err, "service_scope_changed")
+}
+
+func TestProtectedNoInputAllowlistDeniesLegacyAudienceAndInitiator(t *testing.T) {
+	for _, allowed := range [][]session.AccessSubject{nil, {}} {
+		s, req, calls, _, _ := protectedFixture(t)
+		req.Create.AccessContext.Subject = session.AccessSubject{Namespace: "users", ID: "bob"}
+		req.Create.AccessContext.ScopeContext = session.AccessScopeContext{"audience_subjects": json.RawMessage(`["bob"]`)}
+		req.Create.AccessContext.AllowedInputSubjects = allowed
+		a, err := s.Accept(t.Context(), req)
+		if err != nil {
+			t.Fatal("noninteractive invocation rejected", err)
+		}
+		if err := s.Mutate(t.Context(), a.SessionID, false, func(tx pgx.Tx, r *SessionRecord) error {
+			run, err := GetRun(t.Context(), tx, a.SessionID, a.RunID)
+			if err != nil {
+				return err
+			}
+			run.Status = session.Running
+			return PublishRun(t.Context(), tx, r, &run)
+		}); err != nil {
+			t.Fatal(err)
+		}
+		before := calls.Load()
+		_, err = s.Accept(t.Context(), Admission{Key: uuid.New(), SessionID: a.SessionID, RunID: a.RunID, Messages: []session.TextMessage{{Text: "clarify"}}, InputSubjects: []session.AccessSubject{{Namespace: "users", ID: "bob"}}})
+		requireCode(t, err, "input_subject_denied")
+		if calls.Load() != before {
+			t.Fatal("input validation issued credentials")
+		}
+	}
+}
+
+func TestProtectedProviderProjectionCompatibility(t *testing.T) {
+	s, req, _, _, _ := protectedFixture(t)
+	a, err := s.Accept(t.Context(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Cancel(t.Context(), a.SessionID, a.RunID); err != nil {
+		t.Fatal(err)
+	}
+	provider := s.Profiles.Services["kord"].Provider
+	provider.ContextFields = []string{"context_observed_at", "subject", "scope_context"}
+	next := *req.Create.AccessContext
+	next.InvocationID = uuid.New()
+	admission := Admission{Key: uuid.New(), SessionID: a.SessionID, Messages: []session.TextMessage{{Text: "continue"}}, AccessContext: &next}
+	second, err := s.Accept(t.Context(), admission)
+	if err != nil || second.SessionID != a.SessionID {
+		t.Fatal("projection order reset compatible session", err)
+	}
+	if _, err := s.Cancel(t.Context(), second.SessionID, second.RunID); err != nil {
+		t.Fatal(err)
+	}
+	provider.ContextFields = []string{"subject"}
+	next.InvocationID = uuid.New()
+	admission.Key = uuid.New()
+	_, err = s.Accept(t.Context(), admission)
 	requireCode(t, err, "service_scope_changed")
 }

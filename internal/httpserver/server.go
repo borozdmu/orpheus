@@ -304,14 +304,18 @@ func accessContext(in *api.AccessContext) *session.AccessContext {
 	if in == nil {
 		return nil
 	}
-	return &session.AccessContext{InvocationID: in.InvocationID, Subject: session.AccessSubject{Namespace: in.Subject.Namespace, ID: in.Subject.ID}, ScopeContext: session.AccessScopeContext{AudienceSubjects: in.ScopeContext.AudienceSubjects, ChannelID: in.ScopeContext.ChannelID, AgentID: in.ScopeContext.AgentID, PolicySpaceID: in.ScopeContext.PolicySpaceID}, ContextObservedAt: in.ContextObservedAt}
+	return &session.AccessContext{InvocationID: in.InvocationID, Subject: session.AccessSubject{Namespace: in.Subject.Namespace, ID: in.Subject.ID}, ScopeContext: in.ScopeContext, AllowedInputSubjects: convertSubjects(value(in.AllowedInputSubjects, nil)), ContextObservedAt: in.ContextObservedAt}
 }
 func inputSubjects(in *api.InputAccessContext) []session.AccessSubject {
 	if in == nil {
 		return nil
 	}
-	out := make([]session.AccessSubject, len(in.InputSubjects))
-	for i, s := range in.InputSubjects {
+	return convertSubjects(in.InputSubjects)
+}
+
+func convertSubjects(subjects []api.AccessSubject) []session.AccessSubject {
+	out := make([]session.AccessSubject, len(subjects))
+	for i, s := range subjects {
 		out[i] = session.AccessSubject{Namespace: s.Namespace, ID: s.ID}
 	}
 	return out

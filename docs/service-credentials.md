@@ -1,17 +1,17 @@
-# Временные credentials сервисов: пилот
+# Temporary service credentials: experimental provider
 
-Provider — сервер сервиса, который подтверждает область данных и выдаёт короткий
-bearer для одного обращения. Ядро управляет допуском, шифрованием, продлением и
-файлом в sandbox; правила доступа к конкретным данным остаются у provider.
-Механизм экспериментальный. Подключение Mattermost и сквозная приёмка выполняются
-отдельно; изменение ядра само по себе не включает workflow или рабочий канал.
+A provider confirms its own data scope and issues a short-lived bearer for one
+invocation. Orpheus manages admission, encryption, renewal and the sandbox token
+file. Data-specific access rules belong to the provider. Connectors collect trusted
+context and choose who may send further input. This mechanism does not enable a
+workflow or connect a production channel by itself.
 
-## Конфигурация
+## Configuration and provider projection
 
 ```toml
 [services.kord]
 name = "Kord"
-description = "Встречи и данные в общей области канала"
+description = "Meetings and data available to the channel audience"
 
 [services.kord.provider]
 endpoint = "https://provider.example/api/v1/agent-credentials"
@@ -20,80 +20,131 @@ context_fields = ["subject", "scope_context", "context_observed_at"]
 token_file = "~/.kord/run.token"
 ```
 
-Ключ минимум 32 байта задаётся только серверу API и worker. Он исключён из
-allowlist переменных sandbox, даже если ошибочно указан в ней. Endpoint требует
-HTTPS; редиректы и прокси из ENV не используются. Ответ ограничен 64 КиБ,
-HTTP-операция — десятью секундами. Текст ошибок provider клиенту не передаётся.
-Путь задаётся конфигурацией, допустим `~/.<service>/run.token`; ответ provider
-не содержит путей, команд или имён ENV.
+`context_fields` selects any subset of the three supported fields, including an
+empty subset. Duplicate or unsupported names are rejected. Every issue request
+always contains `operation`, a fresh `request_id`, `service` and `invocation_id`;
+it adds only the configured context fields. `allowed_input_subjects`, prompts,
+message metadata, model output and retrieved data are never projected from other
+request fields. With all three fields selected, the Kord issue wire contract is
+unchanged.
 
-Защищённые сервисы выбираются в `configuration.sandbox.services`: файл доступен
-hooks и модели. Run-level `services` остаются областью только hooks, поэтому
-provider в этом списке отклоняется. Сервисы с одним `env_from` работают как прежде.
-В workflow пилота задаётся `run_timeout_seconds: 1200`.
+`scope_context` is shared minimal trusted context, not a container for prompts,
+retrieved data or secrets intended for one provider. Selecting it forwards the
+whole object; providers sharing a run must be permitted to receive that object.
+Orpheus does not inspect provider-specific keys or derive permissions from them.
 
-## Допуск и продолжение
+The server secret must contain at least 32 bytes and is available only to the API
+and worker. It is excluded from sandbox environment selection, even if it appears
+in an environment allowlist. Providers require HTTPS; redirects and environment
+proxies are disabled. Responses are limited to 64 KiB and requests to ten seconds.
+Provider error bodies are not returned to clients. Configuration fixes the token
+path as `~/.<service>/run.token`; provider responses cannot choose paths, commands
+or environment variables.
 
-`CreateSession` и `CreateRun` принимают типизированный `access_context`:
-`invocation_id`, `subject {namespace,id}`, `scope_context` с полной аудиторией,
-каналом, agent и policy space, а также `context_observed_at`. Это доверенный
-контекст коннектора, защищённого серверным API-ключом. Prompt и metadata сообщений
-не предоставляют полномочий. Provider проверяет свежесть снимка и свои права.
+Select protected services in `configuration.sandbox.services` so hooks and the
+model can use the token file. Run-level `services` are available only to hooks and
+reject providers. Existing `env_from` services keep their behavior. The pilot uses
+`run_timeout_seconds: 1200`.
 
-Порядок: read/replay принятой операции; HTTP issue вне транзакции; повторная
-проверка ключа, занятости и области под штатными блокировками; атомарное сохранение.
-Повтор принятого запроса работает при недоступном provider. Один invocation
-принимается только один раз, даже при попытке сменить ключ операции.
-При capacity/busy grant не продлевается автоматически.
+## Trusted invocation context
 
-Сравнивается весь набор защищённых сервисов, их scope_key и серверная привязка
-provider/пути. Замена provider с совпавшим scope_key тоже требует новой сессии. Отсутствующий scope
-в старой сессии несовместим с новым защищённым доступом. Разный автор при той же
-области сохраняет сессию. Изменение области возвращает `409 service_scope_changed`:
-коннектор создаёт чистую штатную сессию с тем же invocation, без прежней истории
-и файлов. Граница истории и предварительная проверка вложений — работа коннектора.
+`CreateSession` and `CreateRun` accept `access_context` from callers authenticated
+with the server API key:
 
-`SendMessage.access_context.input_subjects` содержит автора каждого сообщения
-по порядку. Все авторы проверяются по исходной аудитории и namespace, без issue
-и без пересчёта текущих прав. Подтверждённое авторство сохраняется в отдельном
-аудите, атомарно с сообщениями. Коннектор обязан проверить авторов ещё до подготовки
-вложений в sandbox.
+```json
+{
+  "invocation_id": "a13d5917-7e7c-47a7-b4db-d8a792222038",
+  "subject": {"namespace": "scheduler", "id": "nightly-review"},
+  "scope_context": {"repository": "support", "merge_request_iid": 42},
+  "context_observed_at": "2026-10-12T09:00:00Z",
+  "allowed_input_subjects": [{"namespace": "gitlab", "id": "reviewer"}]
+}
+```
 
-## Срок и хранение
+`subject` identifies the initiating human or service principal. Its namespace and
+ID are nonempty, bounded identifiers. `scope_context` is an opaque JSON object,
+including an empty object, limited to 1 MiB when serialized. The API preserves
+large JSON numbers. No channel, bot, audience or policy-space fields are required:
+cron jobs, merge requests, tickets and messaging connectors use the same core
+contract. Providers validate their own context and its observation time.
 
-Миграция 23 добавляет credentials и аудит авторов. Grant и серверная конфигурация
-шифруются AES-GCM существующим ключом `ENV_ENCRYPTION_KEY`, с отдельным доменом
-шифрования и привязкой к session/run ID. Обычные записи содержат только контекст,
-invocation и scope; токены не попадают в API, события, ENV или shell-команды.
+`allowed_input_subjects` is an optional, frozen list of up to 4096 unique
+`{namespace,id}` principals permitted to use `SendMessage` during this run. Both
+parts must match. An absent or empty list denies every interactive input. The
+initiator need not be in this list: a scheduled service can start a run that only
+named reviewers may steer. Provider scope, message text and metadata never grant
+input authority. Old saved contexts without this explicit list also deny inputs;
+there is no fallback to an audience field inside `scope_context`.
 
-Worker до hooks атомарно устанавливает файл `0600` в каталог `0700`. Renew
-начинается за 60 секунд до истечения, сохраняет bearer, scope и абсолютный срок;
-ключ операции детерминирован по сохранённому lease, поэтому потерянный ответ
-можно повторить. Lease не больше 300 секунд, абсолютный срок не больше 1200.
-При проверке ответа ядро допускает до пяти секунд опережения часов provider
-относительно worker. Это допуск только для верхней границы будущих timestamps:
-значения grant сохраняются без сдвига, истёкший токен не принимается и дедлайн
-выполнения не продлевается. Provider по-прежнему проверяет собственный lease.
-При отказе provider исходный срок сохраняется. Постоянного ключа для обхода нет.
+## Admission and continuation
 
-После рестарта восстанавливается сохранённый grant, пока он действителен; issue
-не повторяется под прежней памятью. Истёкший lease останавливает sandbox, завершает
-run с `service_credentials_expired` и закрывает сессию для дальнейших запусков:
-неподтверждённое состояние модели после остановки нельзя автоматически продолжать.
-Отмена прекращает продление; штатная очистка убирает файл перед паузой, а одноразовую
-sandbox удаляет целиком. Обязательного close/publication callback нет. Текущий ответ
-и файлы публикуются по снимку старта; новые права учитываются следующим invocation.
+Admission first checks for an accepted replay, issues credentials outside the
+transaction, then rechecks idempotency, capacity and scope under the normal locks
+before atomic persistence. Accepted requests replay while a provider is offline.
+One invocation can be accepted only once, even with a different operation key.
+Busy or capacity responses do not trigger automatic renewal.
 
-## Проверка
+The idempotency fingerprint includes invocation context and input authority.
+Nested scope object ordering and equivalent decimal forms are canonicalized
+without losing number precision or modifying the object sent to providers.
 
-`make fix gofix check` включает генерацию API/sqlc, unit и PostgreSQL integration,
-миграции вверх/вниз, race, линтеры и сборку. Новые сценарии проверяют шифрование,
-допуск при конкуренции, accepted replay при отказе provider, смену автора/области,
-запрет повторного invocation и чужих уточнений, восстановление worker, продление,
-истечение и отказ записи файла. Живой AgentBox, реальный provider и доставка MM
-требуют отдельной сквозной приёмки. GitLab и действующий prototype не изменяются.
+Continuation compares the complete protected service set, each `scope_key` and
+its configured endpoint, server secret binding, token path and context projection.
+Projection order is irrelevant; changing its fields requires a new session even
+when the provider returns the same scope key. A legacy session without a protected
+scope cannot acquire protected credentials under its existing memory. A different
+initiator with the same confirmed scope may continue the session.
 
-Для воспроизводимости проверок вместе с пилотом обновлены исходные Go Docker-образы
-до 1.27.2, x/net до 0.60.0 и необходимые транзитивные зависимости. Эти исправления
-устраняют обнаруженные штатными сканерами уязвимости исходной основы. Инструменты
-golangci-lint/goimports обновлены для совместимости с форматом экспорта Go.
+An incompatible scope returns `409 service_scope_changed`. The connector creates
+a clean regular session with the same invocation and excludes prior history and
+files. History boundaries and attachment checks remain the connector's concern.
+
+`SendMessage.access_context.input_subjects` supplies the confirmed author of each
+message in order. Orpheus checks every author against the run's saved explicit
+allowlist, without another issue request or a fresh permission calculation. The
+input audit and messages are persisted atomically. Connectors must check authors
+before preparing attachments in the sandbox.
+
+## Lifetime and storage
+
+Migration 23 adds credentials and input-author auditing. Grants and server
+configuration are encrypted using the existing AES-GCM `ENV_ENCRYPTION_KEY`, a
+separate encryption domain and session/run bindings. Ordinary database columns
+hold only invocation context and scopes. Tokens do not enter public APIs, events,
+environment variables or shell commands.
+
+Before hooks run, the worker atomically installs a `0600` file in a `0700`
+directory. Renewal starts 60 seconds before expiry and preserves the bearer,
+credential ID, scope and absolute deadline. Its operation key derives from the
+saved lease, so a lost response can be retried. The lease is at most 300 seconds;
+the absolute run lifetime is at most 1200 seconds.
+
+The response check tolerates a provider clock up to five seconds ahead, solely
+when bounding future timestamps. It preserves all grant timestamps, rejects
+expired credentials and never extends the execution deadline. Providers enforce
+their own leases. Provider failures leave the existing expiry unchanged; there is
+no permanent-key fallback.
+
+Restart restores the saved grant while valid; it does not issue again under old
+model memory. An expired lease stops the sandbox, fails the run with
+`service_credentials_expired` and closes the session to further runs. Unconfirmed
+model state after that stop cannot continue automatically. Cancellation stops
+renewal. Normal cleanup removes the file before pausing, or deletes a single-run
+sandbox. There is no required close/publication callback. Responses and files use
+the invocation's initial rights snapshot; later rights apply to the next run.
+
+## Verification
+
+Run `make fix gofix check`. This includes API and SQL generation checks, unit and
+PostgreSQL integration tests, migration up/down tests, race detection, linters,
+vulnerability scans and compilation. Credential tests cover generic cron/MR/ticket
+contexts, lossless JSON and canonical replay, frozen namespaced input authority,
+empty-list denial, provider projection, encryption, concurrent admission,
+accepted replay during provider outage, author/scope/projection changes,
+invocation reuse, worker recovery, renewal, expiry and token-file write failures.
+
+Live AgentBox, a real provider and end-to-end connector delivery need separate
+acceptance. These core changes do not modify the prototype or GitLab repositories.
+The pilot's Go 1.27.2 images, x/net 0.60.0 and related toolchain/dependency updates
+address vulnerabilities and Go export-format compatibility found by the normal
+checks.

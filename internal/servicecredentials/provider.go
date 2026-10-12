@@ -38,10 +38,12 @@ func (c Config) Validate() error {
 	if err != nil || u.Scheme != "https" || u.Hostname() == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || !envName.MatchString(c.SecretEnv) || !tokenPath.MatchString(c.TokenFile) {
 		return errors.New("invalid credentials provider configuration")
 	}
-	fields := slices.Sorted(slices.Values(c.ContextFields))
-	want := slices.Sorted(slices.Values(projection))
-	if !slices.Equal(fields, want) {
-		return errors.New("provider context projection must contain only subject, scope_context and context_observed_at")
+	seen := map[string]bool{}
+	for _, field := range c.ContextFields {
+		if !slices.Contains(projection, field) || seen[field] {
+			return errors.New("provider context projection must contain unique fields from subject, scope_context and context_observed_at")
+		}
+		seen[field] = true
 	}
 	return nil
 }
@@ -140,12 +142,20 @@ func (c Client) call(ctx context.Context, cfg Config, body any) (Grant, error) {
 	return out, nil
 }
 func (c Client) Issue(ctx context.Context, cfg Config, service string, access session.AccessContext) (Grant, error) {
-	return c.call(ctx, cfg, struct {
-		Operation string    `json:"operation"`
-		RequestID uuid.UUID `json:"request_id"`
-		Service   string    `json:"service"`
-		session.AccessContext
-	}{"issue", uuid.New(), service, access})
+	// Keep the provider's projection separate from core-only run authority.
+	// In particular, allowed_input_subjects never leaves Orpheus.
+	body := map[string]any{"operation": "issue", "request_id": uuid.New(), "service": service, "invocation_id": access.InvocationID}
+	for _, field := range cfg.ContextFields {
+		switch field {
+		case "subject":
+			body[field] = access.Subject
+		case "scope_context":
+			body[field] = access.ScopeContext
+		case "context_observed_at":
+			body[field] = access.ContextObservedAt
+		}
+	}
+	return c.call(ctx, cfg, body)
 }
 func (c Client) Renew(ctx context.Context, cfg Config, service string, invocation uuid.UUID, previous Grant) (Grant, error) {
 	// Derived from the persisted lease: a lost response retries the same operation.

@@ -574,11 +574,26 @@ func fingerprint(a Admission) (string, error) {
 		}{c.Sandbox.Template, names, c.Sandbox.EnvFrom, slices.Sorted(slices.Values(c.Sandbox.Services))}, Limits: c.Limits, Hooks: c.Hooks}, Messages: messages, RunEnvNames: runEnvNames, RunEnvFrom: runEnvFrom, RunServices: runServices}
 	}
 	if a.AccessContext != nil || len(a.InputSubjects) > 0 {
+		access := a.AccessContext
+		if access != nil {
+			// Opaque nested objects must not make equivalent retries conflict.
+			// Keep decimal values lossless and do not mutate the caller's snapshot.
+			canonical := *access
+			canonical.ScopeContext = make(session.AccessScopeContext, len(access.ScopeContext))
+			for field, raw := range access.ScopeContext {
+				v, err := canonicalJSON(raw)
+				if err != nil {
+					return "", err
+				}
+				canonical.ScopeContext[field] = v
+			}
+			access = &canonical
+		}
 		value = struct {
 			Value         any                     `json:"value"`
 			AccessContext *session.AccessContext  `json:"access_context,omitzero"`
 			InputSubjects []session.AccessSubject `json:"input_subjects,omitzero"`
-		}{value, a.AccessContext, a.InputSubjects}
+		}{value, access, a.InputSubjects}
 	}
 	raw, err := json.Marshal(value)
 	if err != nil {
@@ -612,6 +627,11 @@ func (s *Store) Accept(ctx context.Context, a Admission) (session.Acceptance, er
 	}
 	if err := a.validateExternal(); err != nil {
 		return result, err
+	}
+	if a.AccessContext != nil {
+		if err := a.AccessContext.Validate(); err != nil {
+			return result, err
+		}
 	}
 	for i, message := range a.Messages {
 		if err := config.ValidateText(message.Text, i); err != nil {
