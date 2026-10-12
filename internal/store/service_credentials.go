@@ -80,7 +80,7 @@ func (s *Store) checkCredentials(ctx context.Context, tx pgx.Tx, record SessionR
 		}
 		for _, subject := range a.InputSubjects {
 			if !saved.Context.Allows(subject) {
-				return session.Problem(403, "input_subject_denied", "Input author is outside the run audience.")
+				return session.Problem(403, "input_subject_denied", "Input author is not allowed for this run.")
 			}
 		}
 		return nil
@@ -114,7 +114,7 @@ func (s *Store) checkCredentials(ctx context.Context, tx pgx.Tx, record SessionR
 	compatibleProvider := true
 	for code, previous := range old.Entries {
 		next, ok := state.Entries[code]
-		if !ok || previous.Config.Endpoint != next.Config.Endpoint || previous.Config.SecretEnv != next.Config.SecretEnv || previous.Config.TokenFile != next.Config.TokenFile {
+		if !ok || previous.Config.Endpoint != next.Config.Endpoint || previous.Config.SecretEnv != next.Config.SecretEnv || previous.Config.TokenFile != next.Config.TokenFile || !slices.Equal(slices.Sorted(slices.Values(previous.Config.ContextFields)), slices.Sorted(slices.Values(next.Config.ContextFields))) {
 			compatibleProvider = false
 		}
 	}

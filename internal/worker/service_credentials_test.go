@@ -21,7 +21,7 @@ import (
 
 func workerCredentials(t *testing.T, s *store.Store, a session.Acceptance, grant servicecredentials.Grant, cfg servicecredentials.Config) servicecredentials.State {
 	t.Helper()
-	state := servicecredentials.State{Context: session.AccessContext{InvocationID: uuid.New(), Subject: session.AccessSubject{Namespace: "mm", ID: "a"}, ScopeContext: session.AccessScopeContext{AudienceSubjects: []string{"a"}, ChannelID: "channel", AgentID: "bot", PolicySpaceID: "space"}, ContextObservedAt: time.Now()}, Entries: map[string]servicecredentials.Entry{"kord": {Grant: grant, Config: cfg}}}
+	state := servicecredentials.State{Context: session.AccessContext{InvocationID: uuid.New(), Subject: session.AccessSubject{Namespace: "scheduler", ID: "nightly"}, ScopeContext: session.AccessScopeContext{"schedule": json.RawMessage(`"nightly"`)}, ContextObservedAt: time.Now()}, Entries: map[string]servicecredentials.Entry{"kord": {Grant: grant, Config: cfg}}}
 	raw, _ := json.Marshal(state)
 	token, err := s.Cipher.EncryptCredentials(a.SessionID, a.RunID, string(raw))
 	if err != nil {

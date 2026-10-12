@@ -344,6 +344,7 @@ components:
             title: ConfigurationInput
             type: object
         AccessSubject:
+            description: A namespaced human or service principal, supplied by a trusted caller.
             type: object
             additionalProperties: false
             required: [namespace, id]
@@ -357,33 +358,12 @@ components:
                     minLength: 1
                     maxLength: 128
         AccessScopeContext:
+            description: Opaque JSON object interpreted only by the selected credentials provider. Its serialized JSON must not exceed 1 MiB. Orpheus does not derive input permissions from this object.
             type: object
-            additionalProperties: false
-            required: [audience_subjects, channel_id, agent_id, policy_space_id]
-            properties:
-                audience_subjects:
-                    type: array
-                    minItems: 1
-                    maxItems: 4096
-                    uniqueItems: true
-                    items:
-                        type: string
-                        minLength: 1
-                        maxLength: 128
-                channel_id:
-                    type: string
-                    minLength: 1
-                    maxLength: 128
-                agent_id:
-                    type: string
-                    minLength: 1
-                    maxLength: 128
-                policy_space_id:
-                    type: string
-                    minLength: 1
-                    maxLength: 128
+            additionalProperties: true
+            x-go-type: map[string]json.RawMessage
         AccessContext:
-            description: Trusted connector snapshot for a new invocation. Never inferred from prompts or message metadata. Protected service scope changes return 409 service_scope_changed before execution.
+            description: Trusted caller snapshot for a new invocation. Never inferred from prompts or message metadata. Protected service scope changes return 409 service_scope_changed before execution.
             type: object
             additionalProperties: false
             required: [invocation_id, subject, scope_context, context_observed_at]
@@ -398,8 +378,15 @@ components:
                 context_observed_at:
                     type: string
                     format: date-time
+                allowed_input_subjects:
+                    description: Frozen explicit allowlist for SendMessage during this run. Absent or empty denies interactive inputs. The initiating subject need not be listed. Never forwarded to credentials providers.
+                    type: array
+                    maxItems: 4096
+                    uniqueItems: true
+                    items:
+                        $ref: '#/components/schemas/AccessSubject'
         InputAccessContext:
-            description: Confirmed authors of every message in order, checked against the active run snapshot without issuing another credential.
+            description: Confirmed authors of every message in order, checked against the active run's allowed_input_subjects without issuing another credential.
             type: object
             additionalProperties: false
             required: [input_subjects]

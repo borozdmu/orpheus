@@ -1,6 +1,7 @@
 package session
 
 import (
+	"encoding/json"
 	"slices"
 	"strings"
 	"time"
@@ -8,46 +9,51 @@ import (
 	"github.com/google/uuid"
 )
 
+// AccessSubject identifies a human or service principal in a caller's namespace.
 type AccessSubject struct {
 	Namespace string `json:"namespace"`
 	ID        string `json:"id"`
 }
-type AccessScopeContext struct {
-	AudienceSubjects []string `json:"audience_subjects"`
-	ChannelID        string   `json:"channel_id"`
-	AgentID          string   `json:"agent_id"`
-	PolicySpaceID    string   `json:"policy_space_id"`
-}
+
+// AccessScopeContext is a provider-owned JSON object. Orpheus neither interprets
+// its keys nor derives input permissions from it. Raw values preserve numbers.
+type AccessScopeContext = map[string]json.RawMessage
+
 type AccessContext struct {
-	InvocationID      uuid.UUID          `json:"invocation_id"`
-	Subject           AccessSubject      `json:"subject"`
-	ScopeContext      AccessScopeContext `json:"scope_context"`
-	ContextObservedAt time.Time          `json:"context_observed_at"`
+	InvocationID         uuid.UUID          `json:"invocation_id"`
+	Subject              AccessSubject      `json:"subject"`
+	ScopeContext         AccessScopeContext `json:"scope_context"`
+	ContextObservedAt    time.Time          `json:"context_observed_at"`
+	AllowedInputSubjects []AccessSubject    `json:"allowed_input_subjects,omitzero"`
 }
 
 func (a *AccessContext) Validate() error {
 	valid := func(s string) bool {
 		return len(s) > 0 && len(s) <= 128 && strings.TrimSpace(s) == s && !strings.ContainsAny(s, "\x00\r\n")
 	}
+	validSubject := func(subject AccessSubject) bool {
+		return valid(subject.Namespace) && valid(subject.ID)
+	}
 	if a == nil || a.InvocationID == uuid.Nil || a.ContextObservedAt.IsZero() {
 		return Problem(422, "access_context_required", "A trusted access context is required.")
 	}
-	c := a.ScopeContext
-	if !valid(a.Subject.Namespace) || !valid(a.Subject.ID) || !valid(c.ChannelID) || !valid(c.AgentID) || !valid(c.PolicySpaceID) || len(c.AudienceSubjects) == 0 || len(c.AudienceSubjects) > 4096 {
+	if !validSubject(a.Subject) || a.ScopeContext == nil || len(a.AllowedInputSubjects) > 4096 {
 		return Problem(422, "invalid_access_context", "Invalid access context.")
 	}
-	seen := map[string]bool{}
-	for _, id := range c.AudienceSubjects {
-		if !valid(id) || seen[id] {
-			return Problem(422, "invalid_access_context", "Invalid audience.")
-		}
-		seen[id] = true
+	scope, err := json.Marshal(a.ScopeContext)
+	if err != nil || len(scope) > 1<<20 {
+		return Problem(422, "invalid_access_context", "Scope context must be a JSON object of at most 1 MiB.")
 	}
-	if !slices.Contains(c.AudienceSubjects, a.Subject.ID) {
-		return Problem(403, "input_subject_denied", "Author is outside the audience.")
+	seen := map[AccessSubject]bool{}
+	for _, subject := range a.AllowedInputSubjects {
+		if !validSubject(subject) || seen[subject] {
+			return Problem(422, "invalid_access_context", "Invalid allowed input subjects.")
+		}
+		seen[subject] = true
 	}
 	return nil
 }
+
 func (a *AccessContext) Allows(subject AccessSubject) bool {
-	return a != nil && subject.Namespace == a.Subject.Namespace && slices.Contains(a.ScopeContext.AudienceSubjects, subject.ID)
+	return a != nil && slices.Contains(a.AllowedInputSubjects, subject)
 }
