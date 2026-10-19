@@ -81,6 +81,13 @@ stale output instead of silently generating a different release.
 
 ## Development
 
+В отображаемой истории нулевой символ U+0000 заменяется на U+FFFD, поскольку
+PostgreSQL не принимает U+0000 в `text` и `jsonb`. Это относится к сообщениям,
+ошибкам и JSON входов и результатов инструментов. При совпадении ключей после
+замены объект отображается JSON-строкой с сохранением обоих значений. Команды
+и данные нативного агента не изменяются; такой вывод не блокирует сохранение
+и завершение запуска.
+
 The application, generators, linters and tests run in Docker; host Go and Python
 are not required.
 
