@@ -23,10 +23,11 @@ import (
 
 var envName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 var accountID = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]*$`)
-var reserved = strings.Fields(`ALL_PROXY NO_PROXY HTTP_PROXY HTTPS_PROXY all_proxy no_proxy http_proxy https_proxy HOME CODEX_HOME ORPHEUS_LAUNCH_ID ORPHEUS_HOOK_OPERATION_ID ORPHEUS_SESSION_ID ORPHEUS_WORKSPACE_PATH ORPHEUS_RUN_ID ORPHEUS_INPUT_FINGERPRINT ORPHEUS_AGENT_STATUS ORPHEUS_STOP_REASON ORPHEUS_BROWSER_AUTH ORPHEUS_PUBLIC_URL SAML_SP_ENTITY_ID SAML_IDP_METADATA_FILE SAML_SP_CERT_FILE SAML_SP_KEY_FILE BROWSER_SESSION_TTL_SECONDS PUBLIC_API_KEYS OPENAI_API_KEY CODEX_API_KEY OPENAI_BASE_URL OPENAI_ORG_ID OPENAI_ORGANIZATION OPENAI_PROJECT_ID CHATGPT_BASE_URL ENV_ENCRYPTION_KEY AGENTBOX_API_KEY`)
+var reserved = strings.Fields(`ALL_PROXY NO_PROXY HTTP_PROXY HTTPS_PROXY all_proxy no_proxy http_proxy https_proxy HOME CODEX_HOME ORPHEUS_LAUNCH_ID ORPHEUS_HOOK_OPERATION_ID ORPHEUS_SESSION_ID ORPHEUS_WORKSPACE_PATH ORPHEUS_RUN_ID ORPHEUS_INPUT_FINGERPRINT ORPHEUS_AGENT_STATUS ORPHEUS_STOP_REASON ORPHEUS_BROWSER_AUTH ORPHEUS_PUBLIC_URL SAML_SP_ENTITY_ID SAML_IDP_METADATA_FILE SAML_SP_CERT_FILE SAML_SP_KEY_FILE BROWSER_SESSION_TTL_SECONDS PUBLIC_API_KEYS OPENAI_API_KEY CODEX_API_KEY OPENAI_BASE_URL OPENAI_ORG_ID OPENAI_ORGANIZATION OPENAI_PROJECT_ID CHATGPT_BASE_URL ENV_ENCRYPTION_KEY AGENTBOX_API_KEY COUNSEL_GATEWAY_KEY`)
 
 type Auth struct {
 	Mode      string `toml:"mode"`
+	BaseURL   string `toml:"base_url"`
 	AccountID string `toml:"account_id"`
 	APIKeyEnv string `toml:"api_key_env"`
 	Store     string `toml:"store"`
@@ -75,6 +76,7 @@ func ReadProfiles(r io.Reader) (Profiles, error) {
 			Instructions string `toml:"instructions"`
 			Auth         struct {
 				Mode      string  `toml:"mode"`
+				BaseURL   *string `toml:"base_url"`
 				AccountID *string `toml:"account_id"`
 				APIKeyEnv *string `toml:"api_key_env"`
 				Store     *string `toml:"store"`
@@ -151,7 +153,17 @@ func ReadProfiles(r io.Reader) (Profiles, error) {
 				return p, errors.New("invalid API key profile")
 			}
 			v.Auth.APIKeyEnv = *raw.Auth.APIKeyEnv
+			if raw.Auth.BaseURL != nil {
+				u, err := url.Parse(*raw.Auth.BaseURL)
+				if err != nil || u.Scheme != "https" || u.Hostname() == "" || u.User != nil || u.RawQuery != "" || u.ForceQuery || strings.Contains(*raw.Auth.BaseURL, "#") {
+					return p, errors.New("invalid API key base URL")
+				}
+				v.Auth.BaseURL = *raw.Auth.BaseURL
+			}
 		case "account":
+			if raw.Auth.BaseURL != nil {
+				return p, errors.New("base URL is not supported for account profiles")
+			}
 			if raw.Auth.Store == nil || *raw.Auth.Store == "" || raw.Auth.Key == nil || *raw.Auth.Key == "" || raw.Auth.APIKeyEnv != nil || raw.Auth.AccountID == nil || len(*raw.Auth.AccountID) > 128 || !accountID.MatchString(*raw.Auth.AccountID) {
 				return p, errors.New("invalid account profile")
 			}
@@ -362,7 +374,7 @@ func Resolve(in session.ConfigurationInput, p Profiles, allowlist []string, defa
 			return out, invalid("Provider server secret cannot be used as model credentials.", "configuration", "agent", "profile")
 		}
 	}
-	creds := session.Credentials{Mode: profile.Auth.Mode, AccountID: profile.Auth.AccountID, APIKeyEnv: profile.Auth.APIKeyEnv, Key: profile.Auth.Key}
+	creds := session.Credentials{Mode: profile.Auth.Mode, AccountID: profile.Auth.AccountID, APIKeyEnv: profile.Auth.APIKeyEnv, Key: profile.Auth.Key, BaseURL: profile.Auth.BaseURL}
 	if profile.Auth.Mode == "account" {
 		creds.Store = new(p.CredentialStores[profile.Auth.Store])
 	}

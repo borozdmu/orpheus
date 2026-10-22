@@ -59,3 +59,33 @@ values are rejected. Model and account support still determine which options
 Codex can use. Settings are captured when a session is created and reused after
 resume; changing the profile affects new sessions. They are profile settings,
 not public API overrides. Connectors select them through `agent.profile`.
+# HTTPS gateway profile
+
+An operator may set `auth.base_url` on an `api_key` profile. Only absolute HTTPS
+URLs without user information, query or fragment are accepted. The public session
+API cannot override this URL. `account` profiles reject this field.
+
+```toml
+[profiles.gateway]
+harness = "codex"
+model = "gpt-6-luna"
+[profiles.gateway.codex]
+effort = "high"
+[profiles.gateway.auth]
+mode = "api_key"
+api_key_env = "MY_GATEWAY_KEY"
+base_url = "https://gateway.example/v1"
+```
+
+Supply only the gateway credential in `MY_GATEWAY_KEY`. Codex receives it as the
+reserved `COUNSEL_GATEWAY_KEY` launch environment variable. Its dedicated provider
+uses Responses over HTTPS, disables WebSockets and retries, and performs no
+`account/login/start`. Its URL is written to the sandbox's `CODEX_HOME/config.toml`
+using TOML serialization; neither the credential nor the URL is in launch argv.
+Use a separate sandbox and state directory for this profile: its launch replaces
+that directory's `config.toml` with the operator's provider settings. The caller's
+environment map is unchanged. Missing credentials prevent launch.
+
+Without `base_url`, API-key login and account login retain their previous behavior.
+Stored session configurations without the new field remain readable. This routes
+Codex requests; it does not restrict the sandbox's other network access.

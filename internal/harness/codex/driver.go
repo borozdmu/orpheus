@@ -14,6 +14,7 @@ import (
 	"github.com/orpheus-agents/orpheus/internal/accountlimits"
 	"github.com/orpheus-agents/orpheus/internal/harness"
 	"github.com/orpheus-agents/orpheus/internal/session"
+	"github.com/pelletier/go-toml/v2"
 )
 
 type Driver struct {
@@ -52,18 +53,53 @@ func (d *Driver) StateDir(ctx context.Context) (string, error) {
 	return home, nil
 }
 func (d *Driver) Launch(ctx context.Context, env map[string]string, cwd string, source session.Credentials) (int, error) {
+	custom := source.Mode == "api_key" && source.BaseURL != ""
+	if custom {
+		key := os.Getenv(source.APIKeyEnv)
+		if key == "" {
+			return 0, harness.Failure("credentials_unavailable", "Gateway API key is unavailable.")
+		}
+		env = maps.Clone(env)
+		if env == nil {
+			env = map[string]string{}
+		}
+		env["COUNSEL_GATEWAY_KEY"] = key
+		// Operator-controlled configuration, never credentials or a URL in argv.
+		// The gateway profile uses its own sandbox and Codex state directory.
+		home, err := d.StateDir(ctx)
+		if err != nil {
+			return 0, err
+		}
+		raw, err := toml.Marshal(map[string]any{
+			"model_provider": "counsel_gateway",
+			"model_providers": map[string]any{"counsel_gateway": map[string]any{
+				"name": "Counsel gateway", "base_url": source.BaseURL,
+				"env_key": "COUNSEL_GATEWAY_KEY", "wire_api": "responses",
+				"requires_openai_auth": false, "supports_websockets": false,
+				"request_max_retries": 0, "stream_max_retries": 0,
+			}},
+		})
+		if err != nil {
+			return 0, err
+		}
+		if err := d.rpc.sandbox.Write(ctx, home+"/config.toml", raw); err != nil {
+			return 0, err
+		}
+	}
 	mode := "api"
 	if source.Mode == "account" {
 		mode = "chatgpt"
 	}
 	var command strings.Builder
 	command.WriteString("exec codex")
-	for _, option := range []string{
-		`cli_auth_credentials_store="file"`,
-		`forced_login_method="` + mode + `"`,
+	options := []string{
 		`approval_policy="never"`,
 		`sandbox_mode="danger-full-access"`,
-	} {
+	}
+	if !custom {
+		options = append(options, `cli_auth_credentials_store="file"`, `forced_login_method="`+mode+`"`)
+	}
+	for _, option := range options {
 		command.WriteString(" -c " + harness.Quote(option))
 	}
 	return d.rpc.Launch(ctx, command.String()+" app-server", env, cwd)
@@ -73,7 +109,7 @@ func (d *Driver) Initialize(ctx context.Context, source session.Credentials, log
 	if err := d.rpc.Initialize(ctx); err != nil {
 		return err
 	}
-	if login && source.Mode == "api_key" {
+	if login && source.Mode == "api_key" && source.BaseURL == "" {
 		key := os.Getenv(source.APIKeyEnv)
 		if key == "" {
 			return harness.Failure("credentials_unavailable", "Provider API key is unavailable.")
