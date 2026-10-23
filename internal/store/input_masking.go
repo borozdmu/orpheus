@@ -36,6 +36,9 @@ func (a Admission) operation() (string, string) {
 // authority/routing identifiers never enter the masker or model input.
 func (s *Store) Admit(ctx context.Context, a Admission) (session.Acceptance, error) {
 	a.normalize()
+	if err := a.validate(); err != nil {
+		return session.Acceptance{}, err
+	}
 	enabled := false
 	if a.Create != nil {
 		enabled = s.Profiles.Profiles[a.Create.Configuration.Agent.Profile].MaskInput
@@ -45,6 +48,7 @@ func (s *Store) Admit(ctx context.Context, a Admission) (session.Acceptance, err
 			return session.Acceptance{}, err
 		}
 		enabled = record.Configuration.InputMasked
+		a.policySession = &record
 	}
 	if !enabled {
 		return s.accept(ctx, a)
@@ -63,12 +67,9 @@ func (s *Store) Admit(ctx context.Context, a Admission) (session.Acceptance, err
 	for i, message := range a.Messages {
 		texts[i] = message.Text
 	}
-	if a.Create != nil {
-		instructions := s.Profiles.Profiles[a.Create.Configuration.Agent.Profile].Instructions
-		if a.Create.Configuration.Agent.Instructions != nil {
-			instructions = *a.Create.Configuration.Agent.Instructions
-		}
-		texts = append(texts, instructions)
+	clientInstructions := a.Create != nil && a.Create.Configuration.Agent.Instructions != nil
+	if clientInstructions {
+		texts = append(texts, *a.Create.Configuration.Agent.Instructions)
 	}
 	token, err := s.Profiles.InputMasker.Token()
 	if err != nil {
@@ -85,7 +86,9 @@ func (s *Store) Admit(ctx context.Context, a Admission) (session.Acceptance, err
 	if a.Create != nil {
 		create := *a.Create
 		create.Messages = a.Messages
-		create.Configuration.Agent.Instructions = new(masked[len(a.Messages)])
+		if clientInstructions {
+			create.Configuration.Agent.Instructions = new(masked[len(a.Messages)])
+		}
 		a.Create = &create
 	}
 	a.inputMasked, a.requestDigest = true, digest

@@ -69,13 +69,13 @@ func (m InputMasker) Token() (string, error) {
 }
 
 func (m InputMasker) runtime() error {
-	token, err := m.Token()
+	_, err := m.Token()
 	if err != nil {
 		return err
 	}
 	u, _ := url.Parse(m.URL) // ReadProfiles validated the address.
-	if token != "" && u != nil && u.Scheme == "http" && !net.ParseIP(u.Hostname()).IsLoopback() && !strings.EqualFold(u.Hostname(), "localhost") {
-		slog.Warn("Input masker access token uses HTTP outside loopback; configure HTTPS or protect the trusted network")
+	if u != nil && u.Scheme == "http" && !net.ParseIP(u.Hostname()).IsLoopback() && !strings.EqualFold(u.Hostname(), "localhost") {
+		slog.Warn("Input masker sends original text over HTTP outside loopback; configure HTTPS or protect the trusted network")
 	}
 	return nil
 }

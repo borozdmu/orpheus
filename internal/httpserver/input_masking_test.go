@@ -180,7 +180,7 @@ func TestInputMaskingSynthetic(t *testing.T) {
 	t.Log("synthetic: PERSON persisted, original absent from text/instructions; metadata trusted-side only; unavailable=503 unchanged DB; sandbox=0 model_sends=0 (no worker)")
 }
 
-func TestInputMaskingProfileInstructionsAndFailures(t *testing.T) {
+func TestInputMaskingClientInstructionsAndFailures(t *testing.T) {
 	for _, tc := range []struct {
 		name, body string
 		status     int
@@ -191,6 +191,8 @@ func TestInputMaskingProfileInstructionsAndFailures(t *testing.T) {
 		{"null", `{"masked_texts":["[PERSON_test]",null]}`, 200, false},
 		{"malformed", `{"masked_texts":`, 200, false},
 		{"busy", `private-response`, 429, false},
+		{"busy-valid-body", `{"masked_texts":["[PERSON_test]","[PERSON_test]"]}`, 429, false},
+		{"unavailable-valid-body", `{"masked_texts":["[PERSON_test]","[PERSON_test]"]}`, 503, false},
 		{"timeout", `{"masked_texts":["[PERSON_test]","[PERSON_test]"]}`, 200, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -210,7 +212,7 @@ func TestInputMaskingProfileInstructionsAndFailures(t *testing.T) {
 			s.Profiles = inputMaskingProfiles(t, masker.URL, true)
 			s.Profiles.InputMasker.TokenEnv = "FIXTURE_MASKER_TOKEN"
 			s.Profiles.InputMasker.TimeoutSeconds = 1
-			body := strings.Replace(maskingBody, `,"instructions":"Помоги Иванов Пётр Сергеевич"`, "", 1)
+			body := maskingBody
 			before := maskingCounts(t, s)
 			status, _, raw := requestHTTP(t, server, "POST", "/api/v1/sessions", body, "key", uuid.NewString())
 			if tc.name == "success" {
@@ -228,6 +230,34 @@ func TestInputMaskingProfileInstructionsAndFailures(t *testing.T) {
 				t.Fatal("invalid masker response accepted, persisted data or leaked details", status)
 			}
 		})
+	}
+}
+
+func TestInputMaskingKeepsOperatorInstructions(t *testing.T) {
+	masker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var in struct {
+			Texts []string `json:"texts"`
+		}
+		if json.NewDecoder(r.Body).Decode(&in) != nil || len(in.Texts) != 1 {
+			t.Error("operator instructions entered the masker")
+		}
+		for i := range in.Texts {
+			in.Texts[i] = "[PERSON_test]"
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"masked_texts": in.Texts})
+	}))
+	defer masker.Close()
+	server, s := testServer(t)
+	s.Profiles = inputMaskingProfiles(t, masker.URL, true)
+	body := strings.Replace(maskingBody, `,"instructions":"Помоги Иванов Пётр Сергеевич"`, "", 1)
+	a := decodeHTTP[session.Acceptance](t, externalRequest(t, server, "POST", "/api/v1/sessions", body, uuid.NewString(), 202))
+	record, err := store.GetSession(t.Context(), s.Pool, a.SessionID, false)
+	if err != nil || record.Configuration.Public.Agent.Instructions != "Помоги "+maskingName || !record.Configuration.InputMasked {
+		t.Fatal("operator instructions changed or session policy lost", err)
+	}
+	m, err := store.GetMessage(t.Context(), s.Pool, a.MessageID)
+	if err != nil || m.Text != "[PERSON_test]" {
+		t.Fatal("client message not masked", err)
 	}
 }
 

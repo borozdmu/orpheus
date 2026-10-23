@@ -30,6 +30,8 @@ func TestMaskAtomicResponse(t *testing.T) {
 		{"trailing", `{"masked_texts":["[PERSON_1]",""]} {}`, 200, false},
 		{"unavailable", `original must never escape`, 503, false},
 		{"busy", `original must never escape`, 429, false},
+		{"busy-valid-body", `{"masked_texts":["[PERSON_1]",""]}`, 429, false},
+		{"unavailable-valid-body", `{"masked_texts":["[PERSON_1]",""]}`, 503, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			calls := 0

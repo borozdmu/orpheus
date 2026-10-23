@@ -90,7 +90,9 @@ func TestInputMaskerHTTPTokenWarning(t *testing.T) {
 		{"http://masker.internal", true, true}, {"http://192.168.1.2:3001", true, true},
 		{"http://127.0.0.1:3001", true, false}, {"http://[::1]:3001", true, false},
 		{"http://localhost:3001", true, false}, {"https://masker.internal", true, false},
-		{"http://masker.internal", false, false},
+		{"http://masker.internal", false, true},
+		{"http://127.0.0.1:3001", false, false},
+		{"https://masker.internal", false, false},
 	} {
 		var output bytes.Buffer
 		slog.SetDefault(slog.New(slog.NewTextHandler(&output, nil)))

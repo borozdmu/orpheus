@@ -121,14 +121,16 @@ The optional access token is read from `token_env` or `token_file` and sent only
 as `Authorization: Bearer ...`. Missing, empty, malformed or unreadable configured
 credentials prevent API startup and fail new admissions without writes. They are
 never included in errors, session snapshots, sandbox environment references or
-request arguments. Token files may have a trailing newline. When a token is set
-with HTTP outside loopback, API startup logs a warning without the token or URL;
+request arguments. Token files may have a trailing newline. For any HTTP address
+outside loopback, API startup logs a warning without the token or URL, even when
+no access token is configured;
 HTTP remains allowed for the trusted private network. Rotate the referenced
 source without changing accepted requests: new masker calls read its current value.
 
 Before any admission write or credential issuance, Orpheus masks every incoming
-message's `text` and the effective initial `agent.instructions` (request override
-or profile default). New runs and interactive messages use the immutable
+message's `text` and initial `agent.instructions` supplied by the client.
+Static operator instructions from the profile remain unchanged and are never
+sent to the masker. New runs and interactive messages use the immutable
 `input_masked` marker in the stored internal session configuration. Changing the
 profile affects only new sessions: old ordinary sessions stay ordinary, and
 protected sessions continue requiring the masker even after the flag is disabled.
@@ -136,15 +138,39 @@ protected sessions continue requiring the masker even after the flag is disabled
 Message `metadata` remains original on the trusted Orpheus database and is never
 sent to the agent or sandbox. Technical IDs, routing and access subjects also stay
 unchanged. These APIs accept text messages only; attachment fields are rejected by
-the existing schema. This feature does not mask tool outputs, hooks or files.
+the existing schema. Values in `configuration.sandbox.env`, request/run `env`
+and hook script bodies are also trusted-client fields and are **not masked**;
+the sandbox and agent may read them. Clients must not put unmasked sensitive text
+in those fields. This feature does not mask tool outputs or files either.
+
+The Telegram connector supplies workflow instructions as client instructions
+(`orpheus-telegram/internal/service/engine.go:573`, `:577`), so Counsel_beta's
+workflow prompt will be masked. Checking the actual Counsel_beta prompt through
+the real masker belongs to MVP step 3; this intake step uses synthetic prompts.
 
 Unavailable service, timeout, non-200, redirect, malformed or incomplete response
 returns HTTP 503 `input_masker_unavailable`, with no writes and no original-text
 fallback. There are no redirects, environment proxies or automatic retries.
+Clients must retry HTTP 503 `input_masker_unavailable` with the same request body
+and idempotency key, including when the masker is busy (429 becomes 503).
+The Telegram connector does retry: non-2xx becomes an error
+(`orpheus-telegram/internal/orpheus/client.go:56`); 503 retains the pending request
+(`internal/service/engine.go:735`, `:746`); the reconcile loop submits it again
+(`internal/service/engine.go:373`, `internal/service/runtime.go:33`, `:109`).
+This was verified by reading source, not a live connector test.
 Idempotency hashes the canonical **original request before masking**; only the
 digest is persisted, not its original prompt text. An accepted replay returns the
 original acceptance before calling the masker, including during an outage or
 after profile changes. A changed request with the same key returns 409.
 
 To stop using the feature, disable the profile flag and create new sessions.
-Do not resume protected sessions with a binary that predates this feature.
+For a binary rollback, find protected sessions on the trusted database:
+
+```sql
+SELECT id FROM sessions WHERE configuration->>'input_masked' = 'true';
+```
+
+Stop admission and execution for those sessions. Remove `[input_masker]` and all
+profile `mask_input` settings from `orpheus.toml` **before starting the old binary**:
+its strict TOML decoder rejects these fields. Do not resume protected sessions
+with a binary that predates this feature; it ignores the stored privacy marker.
