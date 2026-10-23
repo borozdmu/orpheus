@@ -90,7 +90,7 @@ func (s *Server) CreateSession(ctx context.Context, r api.CreateSessionRequestOb
 		return nil, err
 	}
 	in.Messages = inputMessages(r.Body.Messages)
-	a, err := s.Store.Accept(ctx, store.Admission{Create: &in, Key: id})
+	a, err := s.Store.Admit(ctx, store.Admission{Create: &in, Key: id})
 	if err != nil {
 		return nil, err
 	}
@@ -108,7 +108,7 @@ func (s *Server) CreateRun(ctx context.Context, r api.CreateRunRequestObject) (a
 	if r.Body == nil {
 		return nil, session.Problem(422, "validation_error", "Request body is required.")
 	}
-	a, err := s.Store.Accept(ctx, store.Admission{AccessContext: accessContext(r.Body.AccessContext), SessionID: r.Sid, Messages: inputMessages(r.Body.Messages), InputFingerprint: r.Body.InputFingerprint, Env: value(r.Body.Env, nil), EnvFrom: value(r.Body.EnvFrom, nil), Services: value(r.Body.Services, nil), Key: id})
+	a, err := s.Store.Admit(ctx, store.Admission{AccessContext: accessContext(r.Body.AccessContext), SessionID: r.Sid, Messages: inputMessages(r.Body.Messages), InputFingerprint: r.Body.InputFingerprint, Env: value(r.Body.Env, nil), EnvFrom: value(r.Body.EnvFrom, nil), Services: value(r.Body.Services, nil), Key: id})
 	if err != nil {
 		return nil, err
 	}
@@ -126,7 +126,7 @@ func (s *Server) SendMessage(ctx context.Context, r api.SendMessageRequestObject
 	if r.Body == nil {
 		return nil, session.Problem(422, "validation_error", "Request body is required.")
 	}
-	a, err := s.Store.Accept(ctx, store.Admission{InputSubjects: inputSubjects(r.Body.AccessContext), SessionID: r.Sid, RunID: r.Rid, Messages: inputMessages(r.Body.Messages), Key: id})
+	a, err := s.Store.Admit(ctx, store.Admission{InputSubjects: inputSubjects(r.Body.AccessContext), SessionID: r.Sid, RunID: r.Rid, Messages: inputMessages(r.Body.Messages), Key: id})
 	if err != nil {
 		return nil, err
 	}

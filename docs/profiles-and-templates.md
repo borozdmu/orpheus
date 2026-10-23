@@ -89,3 +89,62 @@ environment map is unchanged. Missing credentials prevent launch.
 Without `base_url`, API-key login and account login retain their previous behavior.
 Stored session configurations without the new field remain readable. This routes
 Codex requests; it does not restrict the sandbox's other network access.
+
+## Trusted input masking
+
+Input masking is disabled by default. An operator can enable it for new sessions
+of a selected profile; the public request has no masking override:
+
+```toml
+[input_masker]
+url = "http://127.0.0.1:3101"
+timeout_seconds = 30
+# Optional: choose one source, never an inline token.
+# token_env = "MASKER_ACCESS_TOKEN"
+# token_file = "/run/secrets/masker_access_token"
+
+[profiles.Counsel_beta]
+harness = "codex"
+model = "your-model"
+mask_input = true
+[profiles.Counsel_beta.auth]
+mode = "api_key"
+api_key_env = "COUNSEL_GATEWAY_KEY"
+```
+
+Use the trusted service's reachable address (container loopback refers to the
+container itself). HTTP and HTTPS are supported; credentials, queries and
+fragments in the URL are forbidden. The timeout is required, from 1 to 300 seconds.
+Keep this service on the trusted network: it receives original text. Its HMAC key
+stays inside the masker; Orpheus uses only `POST /v1/mask/segments`, no manifests.
+The optional access token is read from `token_env` or `token_file` and sent only
+as `Authorization: Bearer ...`. Missing, empty, malformed or unreadable configured
+credentials prevent API startup and fail new admissions without writes. They are
+never included in errors, session snapshots, sandbox environment references or
+request arguments. Token files may have a trailing newline. When a token is set
+with HTTP outside loopback, API startup logs a warning without the token or URL;
+HTTP remains allowed for the trusted private network. Rotate the referenced
+source without changing accepted requests: new masker calls read its current value.
+
+Before any admission write or credential issuance, Orpheus masks every incoming
+message's `text` and the effective initial `agent.instructions` (request override
+or profile default). New runs and interactive messages use the immutable
+`input_masked` marker in the stored internal session configuration. Changing the
+profile affects only new sessions: old ordinary sessions stay ordinary, and
+protected sessions continue requiring the masker even after the flag is disabled.
+
+Message `metadata` remains original on the trusted Orpheus database and is never
+sent to the agent or sandbox. Technical IDs, routing and access subjects also stay
+unchanged. These APIs accept text messages only; attachment fields are rejected by
+the existing schema. This feature does not mask tool outputs, hooks or files.
+
+Unavailable service, timeout, non-200, redirect, malformed or incomplete response
+returns HTTP 503 `input_masker_unavailable`, with no writes and no original-text
+fallback. There are no redirects, environment proxies or automatic retries.
+Idempotency hashes the canonical **original request before masking**; only the
+digest is persisted, not its original prompt text. An accepted replay returns the
+original acceptance before calling the masker, including during an outage or
+after profile changes. A changed request with the same key returns 409.
+
+To stop using the feature, disable the profile flag and create new sessions.
+Do not resume protected sessions with a binary that predates this feature.

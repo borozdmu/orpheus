@@ -43,6 +43,7 @@ type Template struct {
 	Description *string `toml:"description"`
 }
 type Profile struct {
+	MaskInput    bool         `toml:"mask_input"`
 	Description  *string      `toml:"description"`
 	Harness      string       `toml:"harness"`
 	Model        *string      `toml:"model"`
@@ -51,6 +52,7 @@ type Profile struct {
 	Auth         Auth         `toml:"auth"`
 }
 type Profiles struct {
+	InputMasker      InputMasker                        `toml:"input_masker"`
 	Services         map[string]Service                 `toml:"services"`
 	Templates        map[string]Template                `toml:"templates"`
 	Profiles         map[string]Profile                 `toml:"profiles"`
@@ -61,9 +63,11 @@ func ReadProfiles(r io.Reader) (Profiles, error) {
 	// Presence matters: an omitted default and an explicitly empty value are
 	// different, as are forbidden fields in either authentication variant.
 	var source struct {
-		Services  map[string]Service  `toml:"services"`
-		Templates map[string]Template `toml:"templates"`
-		Profiles  map[string]struct {
+		InputMasker InputMasker         `toml:"input_masker"`
+		Services    map[string]Service  `toml:"services"`
+		Templates   map[string]Template `toml:"templates"`
+		Profiles    map[string]struct {
+			MaskInput   bool    `toml:"mask_input"`
 			Description *string `toml:"description"`
 			Harness     string  `toml:"harness"`
 			Model       *string `toml:"model"`
@@ -92,6 +96,10 @@ func ReadProfiles(r io.Reader) (Profiles, error) {
 	}
 	p := Profiles{Profiles: map[string]Profile{}, CredentialStores: map[string]session.CredentialStore{}}
 	if err := toml.NewDecoder(r).DisallowUnknownFields().Decode(&source); err != nil {
+		return p, err
+	}
+	p.InputMasker = source.InputMasker
+	if err := p.InputMasker.validate(); err != nil {
 		return p, err
 	}
 	if len(source.Profiles) == 0 {
@@ -126,7 +134,10 @@ func ReadProfiles(r io.Reader) (Profiles, error) {
 		p.CredentialStores[name] = s
 	}
 	for name, raw := range source.Profiles {
-		v := Profile{Description: normalizedDescription(raw.Description), Harness: raw.Harness, Model: raw.Model, Instructions: raw.Instructions, Auth: Auth{Mode: raw.Auth.Mode}}
+		v := Profile{MaskInput: raw.MaskInput, Description: normalizedDescription(raw.Description), Harness: raw.Harness, Model: raw.Model, Instructions: raw.Instructions, Auth: Auth{Mode: raw.Auth.Mode}}
+		if v.MaskInput && p.InputMasker.URL == "" {
+			return p, errors.New("mask_input requires input_masker configuration")
+		}
 		for _, option := range []struct {
 			name   string
 			value  *string
@@ -173,6 +184,9 @@ func ReadProfiles(r io.Reader) (Profiles, error) {
 			}
 		default:
 			return p, errors.New("invalid authentication mode")
+		}
+		if p.InputMasker.TokenEnv != "" && v.Auth.APIKeyEnv == p.InputMasker.TokenEnv {
+			return p, errors.New("input masker token cannot be used as model credentials")
 		}
 		p.Profiles[name] = v
 	}
@@ -541,6 +555,11 @@ func (s Settings) Runtime(api bool) (Profiles, *secret.Cipher, error) {
 	p, err := LoadProfiles(s.ConfigFile)
 	if err != nil {
 		return p, nil, err
+	}
+	if api {
+		if err := p.InputMasker.runtime(); err != nil {
+			return p, nil, err
+		}
 	}
 	c, err := secret.New(s.EnvEncryptionKey)
 	return p, c, err

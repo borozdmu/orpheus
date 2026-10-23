@@ -507,6 +507,8 @@ func selectFinalMessage(ctx context.Context, tx pgx.Tx, r *RunRecord) error {
 const maxAdmissionMessages = 256
 
 type Admission struct {
+	inputMasked      bool
+	requestDigest    string
 	AccessContext    *session.AccessContext
 	InputSubjects    []session.AccessSubject
 	InputFingerprint *string
@@ -603,9 +605,9 @@ func fingerprint(a Admission) (string, error) {
 	return hex.EncodeToString(h[:]), nil
 }
 
-// Accept locks idempotency first, then capacity (except steer), then the session
+// accept locks idempotency first, then capacity (except steer), then the session
 // row. Mutate follows the same capacity-before-session order.
-func (s *Store) Accept(ctx context.Context, a Admission) (session.Acceptance, error) {
+func (s *Store) accept(ctx context.Context, a Admission) (session.Acceptance, error) {
 	var result session.Acceptance
 	if a.Create != nil {
 		a.Messages = a.Create.Messages
@@ -657,6 +659,9 @@ func (s *Store) Accept(ctx context.Context, a Admission) (session.Acceptance, er
 	if err != nil {
 		return result, err
 	}
+	if a.requestDigest != "" {
+		digest = a.requestDigest
+	}
 	if prior, found, err := s.replay(ctx, s.Pool, a, op, resource, digest); err != nil || found {
 		return prior, err
 	}
@@ -701,6 +706,7 @@ func (s *Store) Accept(ctx context.Context, a Admission) (session.Acceptance, er
 			if err != nil {
 				return err
 			}
+			resolved.InputMasked = a.inputMasked
 			id := uuid.New()
 			token, err := s.Cipher.Encrypt(id, a.Create.Configuration.Sandbox.Env)
 			if err != nil {

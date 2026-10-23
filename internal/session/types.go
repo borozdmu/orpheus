@@ -142,6 +142,7 @@ type Credentials struct {
 	Key       string           `json:"key" toml:"key"`
 }
 type ResolvedConfiguration struct {
+	InputMasked bool          `json:"input_masked,omitzero"`
 	Version     int           `json:"version"`
 	Harness     string        `json:"harness"`
 	Public      Configuration `json:"public"`
