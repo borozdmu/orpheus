@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"log/slog"
 	"slices"
 	"time"
 
@@ -73,11 +74,13 @@ func (s *Store) Admit(ctx context.Context, a Admission) (session.Acceptance, err
 	}
 	token, err := s.Profiles.InputMasker.Token()
 	if err != nil {
-		return session.Acceptance{}, session.Problem(503, "input_masker_unavailable", "Input masking is unavailable. Nothing was accepted; retry later.")
+		slog.WarnContext(ctx, "Input masking unavailable", "reason", "access_token")
+		return s.maskingUnavailable(ctx, a, op, resource, digest)
 	}
 	masked, err := inputmasker.Mask(ctx, s.Profiles.InputMasker.URL, time.Duration(s.Profiles.InputMasker.TimeoutSeconds)*time.Second, texts, token)
 	if err != nil {
-		return session.Acceptance{}, session.Problem(503, "input_masker_unavailable", "Input masking is unavailable. Nothing was accepted; retry later.")
+		slog.WarnContext(ctx, "Input masking unavailable", "reason", "masker_request")
+		return s.maskingUnavailable(ctx, a, op, resource, digest)
 	}
 	a.Messages = slices.Clone(a.Messages)
 	for i := range a.Messages {
@@ -93,6 +96,15 @@ func (s *Store) Admit(ctx context.Context, a Admission) (session.Acceptance, err
 	}
 	a.inputMasked, a.requestDigest = true, digest
 	return s.accept(ctx, a)
+}
+
+func (s *Store) maskingUnavailable(ctx context.Context, a Admission, op, resource, digest string) (session.Acceptance, error) {
+	// A concurrent request may have committed while we waited for the secret or
+	// service. Keep the original digest: only durable acceptance can win here.
+	if prior, found, err := s.replay(ctx, s.Pool, a, op, resource, digest); err != nil || found {
+		return prior, err
+	}
+	return session.Acceptance{}, session.Problem(503, "input_masker_unavailable", "Input masking is unavailable. Nothing was accepted; retry later.")
 }
 
 // Accept also enforces intake masking for in-process callers. The HTTP entry

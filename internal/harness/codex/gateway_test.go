@@ -1,8 +1,9 @@
 package codex
 
 import (
-	"context"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -14,11 +15,13 @@ import (
 func TestGatewayNeverLogsInWithProviderKey(t *testing.T) {
 	t.Setenv("GATEWAY_SOURCE", "synthetic-gateway-key")
 	t.Setenv("OPENAI_API_KEY", "synthetic-provider-key")
-	box := &testBox{stream: &testStream{out: make(chan []byte), errout: make(chan []byte)}}
-	box.run = func(context.Context, string) ([]byte, error) { return []byte("/fresh/codex"), nil }
+	box := gatewayFilesystem(t)
 	d := New(box, time.Second, 1024)
 	defer func() { _ = d.Close() }()
 	source := session.Credentials{Mode: "api_key", APIKeyEnv: "GATEWAY_SOURCE", BaseURL: "https://gateway.example/random/v1"}
+	if err := d.PrepareLaunch(t.Context(), source); err != nil {
+		t.Fatal(err)
+	}
 	env := map[string]string{"OTHER": "retained"}
 	if _, err := d.Launch(t.Context(), env, "/workspace", source); err != nil {
 		t.Fatal(err)
@@ -41,7 +44,10 @@ func TestGatewayNeverLogsInWithProviderKey(t *testing.T) {
 			StreamRetries int    `toml:"stream_max_retries"`
 		} `toml:"model_providers"`
 	}
-	raw := box.files["/fresh/codex/config.toml"]
+	raw, err := os.ReadFile(filepath.Join(box.home, "config.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := toml.Unmarshal(raw, &cfg); err != nil {
 		t.Fatal(err)
 	}

@@ -71,7 +71,7 @@ func (m InputMasker) Token() (string, error) {
 func (m InputMasker) runtime() error {
 	_, err := m.Token()
 	if err != nil {
-		return err
+		slog.Warn("Input masking unavailable: configured access token is unavailable or invalid; ordinary profiles remain available")
 	}
 	u, _ := url.Parse(m.URL) // ReadProfiles validated the address.
 	if u != nil && u.Scheme == "http" && !net.ParseIP(u.Hostname()).IsLoopback() && !strings.EqualFold(u.Hostname(), "localhost") {

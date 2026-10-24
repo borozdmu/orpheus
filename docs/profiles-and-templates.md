@@ -82,8 +82,17 @@ reserved `COUNSEL_GATEWAY_KEY` launch environment variable. Its dedicated provid
 uses Responses over HTTPS, disables WebSockets and retries, and performs no
 `account/login/start`. Its URL is written to the sandbox's `CODEX_HOME/config.toml`
 using TOML serialization; neither the credential nor the URL is in launch argv.
-Use a separate sandbox and state directory for this profile: its launch replaces
-that directory's `config.toml` with the operator's provider settings. The caller's
+Use a separate sandbox and state directory for this profile. Before process
+launch, Orpheus preserves the template's TOML settings (including MCP and other
+providers), replaces the reserved `model_providers.counsel_gateway` table and
+sets `model_provider`. Comments and formatting may change during serialization.
+Preparation has a timeout of at most 30 seconds (`RPC_TIMEOUT_SECONDS` if lower)
+and a 1 MiB configuration size limit. Invalid or unreadable existing TOML fails
+closed. The new configuration is uploaded to a private temporary file and renamed
+over `config.toml` in the same directory. A preparation failure finishes the run
+and releases its slot through normal sandbox settlement; a worker shutdown before
+process Start leaves preparation safely repeatable on restart. A lost response
+after Start still requires process discovery, never a blind second Start. The caller's
 environment map is unchanged. Missing credentials prevent launch.
 
 Without `base_url`, API-key login and account login retain their previous behavior.
@@ -119,7 +128,13 @@ Keep this service on the trusted network: it receives original text. Its HMAC ke
 stays inside the masker; Orpheus uses only `POST /v1/mask/segments`, no manifests.
 The optional access token is read from `token_env` or `token_file` and sent only
 as `Authorization: Bearer ...`. Missing, empty, malformed or unreadable configured
-credentials prevent API startup and fail new admissions without writes. They are
+credentials leave the shared API available and fail protected admissions without
+writes. Ordinary profiles remain available. A startup warning and sanitized
+admission warnings diagnose the failure. The existing internal
+`/metrics/service` endpoint reports `orpheus_input_masker_secret_available`
+(0 or 1, absent without masker configuration); it reads the current secret but
+does not probe HTTP reachability. `/ready` and `/health` remain process probes.
+Credentials are
 never included in errors, session snapshots, sandbox environment references or
 request arguments. Token files may have a trailing newline. For any HTTP address
 outside loopback, API startup logs a warning without the token or URL, even when
@@ -161,16 +176,77 @@ This was verified by reading source, not a live connector test.
 Idempotency hashes the canonical **original request before masking**; only the
 digest is persisted, not its original prompt text. An accepted replay returns the
 original acceptance before calling the masker, including during an outage or
-after profile changes. A changed request with the same key returns 409.
+after profile changes. Token and masker failures recheck durable replay with the
+original digest before returning 503, so a concurrent committed request wins.
+A changed request with the same key returns 409.
+
+### Rollout and rollback gate
+
+Old binaries ignore the stored privacy marker and can persist plaintext. This
+release adds no database fence that can stop an already released binary. **Do not
+roll out with mixed versions while any protected session can be addressed.**
+The gate below is a deployment check, not a security boundary against an operator
+who supplies an incomplete inventory or restarts an old workload afterwards.
+
+1. Freeze deployment, autoscaling, rollback automation and restart of old
+   workloads for every host with access to this database. Inventory all API and
+   worker processes, including stopped replicas and non-Docker processes. Identify
+   the exact database/queue scope; do not infer it from a container name.
+2. With `mask_input` disabled everywhere, stop all old API and worker processes.
+   Build the approved commit into one immutable image, with the image label
+   `org.opencontainers.image.revision=<full commit SHA>`. Record its tested
+   `sha256:` image ID on each Docker engine; `orpheus --version` alone is not a
+   revision check. Remove stopped old replicas and prevent their recreation.
+   Start only the approved API and workers. Set container labels
+   `io.orpheus.database-scope=<non-secret fleet ID>` and `io.orpheus.role=api`
+   or `worker` after verifying their actual database configuration privately.
+3. On a Docker-only deployment, run the read-only preflight, listing **every**
+   Docker context that can reach this database. Use the actual full SHA and image
+   ID recorded above, not a mutable tag:
+
+   ```sh
+   python3 tools/masking-preflight.py \
+     --context engine-a --context engine-b --scope shared-orpheus \
+     --revision "$APPROVED_COMMIT" --image "$TESTED_IMAGE_ID" \
+     --exclusive-docker-fleet
+   ```
+
+   The last flag attests that all database-capable processes are in those frozen
+   contexts. The command requires running current API and worker containers,
+   checks the image revision and ID, rejects old scoped images even if stopped,
+   and rejects recognizable unscoped Orpheus containers. It reads no container
+   environment, configuration or logs. Unknown/unreachable inventory fails closed.
+   It cannot detect a hidden binary, a false scope label, an omitted engine, a
+   nested process or a future restart. If exclusive Docker inventory cannot be
+   established, **stop here** and require an equivalent verified supervisor
+   inventory and database-access restriction before enabling masking.
+4. Check current DB connections (`pg_stat_activity`) against that inventory and
+   confirm no other DB-capable service account, host or queued deployment can
+   start an old API/worker. A momentary connection list alone cannot exclude an
+   idle old process. Check ordinary api_key/account agents and continuation of
+   existing ordinary sessions with the new image; verify MCP and template/env
+   compatibility. Keep masking off if any check is incomplete.
+5. Only after all gates pass, enable one protected profile and restart its API
+   configuration using the approved image. Keep the deployment freeze and
+   observe ordinary admissions, occupied slots and masker errors. Record the
+   exact revision, image, contexts, results and time. Rerun preflight after any
+   replica/image change before admitting protected traffic.
 
 To stop using the feature, disable the profile flag and create new sessions.
-For a binary rollback, find protected sessions on the trusted database:
+Existing protected sessions retain their policy. For a binary rollback, first
+stop protected admission and execution, then inventory protected sessions on the
+trusted database:
 
 ```sql
 SELECT id FROM sessions WHERE configuration->>'input_masked' = 'true';
 ```
 
-Stop admission and execution for those sessions. Remove `[input_masker]` and all
-profile `mask_input` settings from `orpheus.toml` **before starting the old binary**:
-its strict TOML decoder rejects these fields. Do not resume protected sessions
-with a binary that predates this feature; it ignores the stored privacy marker.
+If any row remains, the old binary must not access this database, including
+terminal reusable sessions. Roll back to a version supporting the marker, or
+prepare an explicitly approved separate database without protected sessions;
+preserve ordinary session IDs/state through that separately reviewed procedure.
+Do not erase privacy markers or original history to pass the check. Only when
+the target database has zero protected sessions and all protected entrypoints
+are stopped may an old binary start. Its strict TOML decoder also requires
+removing `[input_masker]` and all profile `mask_input` fields, but that removal
+alone does not make stored protected sessions safe.

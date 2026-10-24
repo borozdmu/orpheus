@@ -14,10 +14,10 @@ import (
 	"github.com/orpheus-agents/orpheus/internal/accountlimits"
 	"github.com/orpheus-agents/orpheus/internal/harness"
 	"github.com/orpheus-agents/orpheus/internal/session"
-	"github.com/pelletier/go-toml/v2"
 )
 
 type Driver struct {
+	preparedGateway string
 	rpc             *RPC
 	limit           int
 	completed       map[string]bool
@@ -39,6 +39,7 @@ func New(s harness.Sandbox, timeout time.Duration, limit int) *Driver {
 }
 
 var _ harness.Driver = (*Driver)(nil)
+var _ harness.LaunchPreparer = (*Driver)(nil)
 var _ harness.AccountLimitsReader = (*Driver)(nil)
 
 func (d *Driver) StateDir(ctx context.Context) (string, error) {
@@ -55,6 +56,9 @@ func (d *Driver) StateDir(ctx context.Context) (string, error) {
 func (d *Driver) Launch(ctx context.Context, env map[string]string, cwd string, source session.Credentials) (int, error) {
 	custom := source.Mode == "api_key" && source.BaseURL != ""
 	if custom {
+		if d.preparedGateway != source.BaseURL {
+			return 0, harness.Failure("environment_unavailable", "Gateway configuration was not prepared.")
+		}
 		key := os.Getenv(source.APIKeyEnv)
 		if key == "" {
 			return 0, harness.Failure("credentials_unavailable", "Gateway API key is unavailable.")
@@ -64,27 +68,6 @@ func (d *Driver) Launch(ctx context.Context, env map[string]string, cwd string, 
 			env = map[string]string{}
 		}
 		env["COUNSEL_GATEWAY_KEY"] = key
-		// Operator-controlled configuration, never credentials or a URL in argv.
-		// The gateway profile uses its own sandbox and Codex state directory.
-		home, err := d.StateDir(ctx)
-		if err != nil {
-			return 0, err
-		}
-		raw, err := toml.Marshal(map[string]any{
-			"model_provider": "counsel_gateway",
-			"model_providers": map[string]any{"counsel_gateway": map[string]any{
-				"name": "Counsel gateway", "base_url": source.BaseURL,
-				"env_key": "COUNSEL_GATEWAY_KEY", "wire_api": "responses",
-				"requires_openai_auth": false, "supports_websockets": false,
-				"request_max_retries": 0, "stream_max_retries": 0,
-			}},
-		})
-		if err != nil {
-			return 0, err
-		}
-		if err := d.rpc.sandbox.Write(ctx, home+"/config.toml", raw); err != nil {
-			return 0, err
-		}
 	}
 	mode := "api"
 	if source.Mode == "account" {

@@ -76,8 +76,8 @@ lint-docker: tools
 	$(RUN) hadolint .docker/app/dev/Dockerfile .docker/app/prod/Dockerfile .docker/tools/Dockerfile
 
 lint-reader: tools
-	$(RUN) ruff check internal/harness/codex/native_reader.py tests/reader
-	$(RUN) ruff format --check internal/harness/codex/native_reader.py tests/reader
+	$(RUN) ruff check internal/harness/codex/native_reader.py tests/reader tools/masking-preflight.py tests/preflight
+	$(RUN) ruff format --check internal/harness/codex/native_reader.py tests/reader tools/masking-preflight.py tests/preflight
 
 lint: lint-go lint-api lint-docker lint-reader
 
@@ -86,6 +86,7 @@ test-go: tools
 
 test-reader: tools
 	$(RUN) python3 -m unittest discover -s tests/reader
+	$(RUN) python3 -m unittest discover -s tests/preflight
 
 test-integration: tools
 	$(COMPOSE) --profile test up -d --wait test-db test-s3
