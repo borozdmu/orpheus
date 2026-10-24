@@ -5,6 +5,8 @@ import (
 	"errors"
 	"io"
 	"io/fs"
+	"slices"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -42,6 +44,9 @@ func (d *Driver) PrepareLaunch(ctx context.Context, source session.Credentials) 
 		}
 	case !errors.Is(err, fs.ErrNotExist):
 		return err
+	}
+	if !gatewayTemplateAllowed(config) {
+		return harness.Failure("environment_unavailable", "Codex gateway template has conflicting provider or MCP credential settings.")
 	}
 	providers, ok := config["model_providers"].(map[string]any)
 	if !ok {
@@ -83,4 +88,38 @@ func (d *Driver) PrepareLaunch(ctx context.Context, source session.Credentials) 
 	}
 	d.preparedGateway = source.BaseURL
 	return nil
+}
+
+// Gateway routing must not depend on which Codex version a template contains.
+// MCP configuration may survive the merge, but must not reference its reserved key.
+func gatewayTemplateAllowed(config map[string]any) bool {
+	if _, present := config["profile"]; present {
+		return false
+	}
+	profiles, _ := config["profiles"].(map[string]any)
+	for _, value := range profiles {
+		profile, _ := value.(map[string]any)
+		if _, present := profile["model_provider"]; present {
+			return false
+		}
+	}
+	return !referencesGatewayKey(config["mcp_servers"])
+}
+
+func referencesGatewayKey(value any) bool {
+	switch value := value.(type) {
+	case string:
+		return strings.Contains(value, "COUNSEL_GATEWAY_KEY")
+	case map[string]any:
+		for key, item := range value {
+			if strings.Contains(key, "COUNSEL_GATEWAY_KEY") || referencesGatewayKey(item) {
+				return true
+			}
+		}
+	case []any:
+		if slices.ContainsFunc(value, referencesGatewayKey) {
+			return true
+		}
+	}
+	return false
 }

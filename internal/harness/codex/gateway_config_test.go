@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/orpheus-agents/orpheus/internal/harness"
 	"github.com/orpheus-agents/orpheus/internal/session"
 	"github.com/pelletier/go-toml/v2"
 )
@@ -45,8 +46,74 @@ func TestGatewayPreservesTemplateConfig(t *testing.T) {
 type gatewayFilesystemBox struct {
 	*testBox
 	home       string
+	startCalls int
 	write      func(context.Context, string, []byte) error
 	runCommand func(context.Context, string) ([]byte, error)
+}
+
+func (b *gatewayFilesystemBox) Start(ctx context.Context, command string, env map[string]string, cwd string) (harness.Stream, int, error) {
+	b.startCalls++
+	return b.testBox.Start(ctx, command, env, cwd)
+}
+
+func TestGatewayLaunchRequiresMatchingPreparation(t *testing.T) {
+	t.Setenv("GATEWAY_GUARD_KEY", "synthetic-gateway-key")
+	for _, prepared := range []bool{false, true} {
+		t.Run(map[bool]string{false: "unprepared", true: "different_base_url"}[prepared], func(t *testing.T) {
+			box := gatewayFilesystem(t)
+			d := New(box, time.Second, 1024)
+			defer func() { _ = d.Close() }()
+			source := session.Credentials{Mode: "api_key", APIKeyEnv: "GATEWAY_GUARD_KEY", BaseURL: "https://gateway.example/v1"}
+			if prepared {
+				if err := d.PrepareLaunch(t.Context(), source); err != nil {
+					t.Fatal(err)
+				}
+				source.BaseURL = "https://other-gateway.example/v1"
+			}
+			pid, err := d.Launch(t.Context(), nil, "/workspace", source)
+			failure, ok := errors.AsType[*harness.ExecutionError](err)
+			if !ok || failure.Code != "environment_unavailable" || pid != 0 || box.startCalls != 0 {
+				t.Fatalf("unprepared gateway started: pid=%d starts=%d error=%v", pid, box.startCalls, err)
+			}
+		})
+	}
+}
+
+func TestGatewayRejectsUnsafeTemplateConfig(t *testing.T) {
+	for _, tc := range []struct{ name, config string }{
+		{"selected_profile", "profile='direct'\n"},
+		{"empty_profile", "profile=''\n"},
+		{"profile_provider", "[profiles.direct]\nmodel_provider='direct'\n"},
+		{"empty_profile_provider", "[profiles.direct]\nmodel_provider=''\n"},
+		{"mcp_env_vars", "[mcp_servers.company]\nenv_vars=['COUNSEL_GATEWAY_KEY']\n"},
+		{"mcp_env_name", "[mcp_servers.company.env]\nCOUNSEL_GATEWAY_KEY='synthetic-value'\n"},
+		{"mcp_env_value", "[mcp_servers.company.env]\nOTHER='${COUNSEL_GATEWAY_KEY}'\n"},
+		{"mcp_string", "[mcp_servers.company]\ncommand='echo $COUNSEL_GATEWAY_KEY'\n"},
+		{"mcp_nested_values", "[mcp_servers.company]\nargs=[{nested=['${COUNSEL_GATEWAY_KEY}']}]\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			box := gatewayFilesystem(t)
+			path := filepath.Join(box.home, "config.toml")
+			if err := os.WriteFile(path, []byte(tc.config), 0600); err != nil {
+				t.Fatal(err)
+			}
+			d := New(box, time.Second, 1024)
+			defer func() { _ = d.Close() }()
+			source := session.Credentials{Mode: "api_key", BaseURL: "https://gateway.example/v1"}
+			err := d.PrepareLaunch(t.Context(), source)
+			failure, ok := errors.AsType[*harness.ExecutionError](err)
+			if !ok || failure.Code != "environment_unavailable" {
+				t.Fatalf("unsafe gateway template accepted: %v", err)
+			}
+			current, err := os.ReadFile(path)
+			if err != nil || string(current) != tc.config || len(box.files) != 0 {
+				t.Fatal("rejected template changed", err)
+			}
+			if _, err := d.Launch(t.Context(), nil, "/workspace", source); err == nil || box.startCalls != 0 {
+				t.Fatal("Start allowed after failed preparation", err)
+			}
+		})
+	}
 }
 
 func gatewayFilesystem(t *testing.T) *gatewayFilesystemBox {
@@ -80,6 +147,10 @@ model_provider = "other"
 my_feature = true
 [mcp_servers.company]
 url = "https://tools.example/mcp"
+env_vars = ["OTHER"]
+startup_timeout_sec = 10
+[profiles.only_model]
+model = "profile-model"
 [model_providers.other]
 name = "Other"
 [model_providers.counsel_gateway]
@@ -107,6 +178,10 @@ http_headers = { Authorization = "obsolete" }
 		}
 		if config["model"] != "template-model" || config["features"].(map[string]any)["my_feature"] != true || !strings.Contains(string(raw), "mcp_servers.company") || !strings.Contains(string(raw), "model_providers.other") || strings.Contains(string(raw), "obsolete") {
 			t.Fatal("template changed or stale auth retained")
+		}
+		profiles := config["profiles"].(map[string]any)
+		if profiles["only_model"].(map[string]any)["model"] != "profile-model" {
+			t.Fatal("compatible profile setting lost")
 		}
 		if previous != nil && !reflect.DeepEqual(previous, config) {
 			t.Fatal("preparation is not idempotent after reconnect")

@@ -86,6 +86,7 @@ Use a separate sandbox and state directory for this profile. Before process
 launch, Orpheus preserves the template's TOML settings (including MCP and other
 providers), replaces the reserved `model_providers.counsel_gateway` table and
 sets `model_provider`. Comments and formatting may change during serialization.
+Gateway templates must not set top-level `profile`, any `profiles.*.model_provider`, or reference `COUNSEL_GATEWAY_KEY` anywhere in MCP settings (including keys, nested values, `env` and `env_vars`); preparation rejects these configurations before writing or starting Codex.
 Preparation has a timeout of at most 30 seconds (`RPC_TIMEOUT_SECONDS` if lower)
 and a 1 MiB configuration size limit. Invalid or unreadable existing TOML fails
 closed. The new configuration is uploaded to a private temporary file and renamed

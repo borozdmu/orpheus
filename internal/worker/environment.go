@@ -288,6 +288,9 @@ func (e *Executor) ensureHarness(ctx context.Context, record *store.SessionRecor
 					if ctx.Err() != nil {
 						return ctx.Err() // shutdown leaves pending setup safely repeatable
 					}
+					if errors.Is(err, harness.ErrNotFound) || errors.Is(err, harness.ErrRejected) {
+						return err // Tick owns sandbox loss and rejection classification.
+					}
 					return harness.Failure("environment_unavailable", "Harness configuration preparation failed.")
 				}
 			}

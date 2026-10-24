@@ -25,6 +25,7 @@ type gatewayLaunchBox struct {
 	fault                 string
 	cancel                context.CancelFunc
 	lostStart, foundStart bool
+	preparationError      error
 }
 
 func (b *gatewayLaunchBox) Start(_ context.Context, _ string, env map[string]string, _ string) (harness.Stream, int, error) {
@@ -48,6 +49,9 @@ func (b *gatewayLaunchBox) Read(context.Context, string) (io.ReadCloser, error) 
 }
 func (b *gatewayLaunchBox) Run(ctx context.Context, command string) ([]byte, error) {
 	if strings.Contains(command, "CODEX_HOME") {
+		if b.preparationError != nil {
+			return nil, b.preparationError
+		}
 		switch b.fault {
 		case "state_dir", "state_dir_lost_response":
 			return nil, errors.New("synthetic state directory response loss")
@@ -58,6 +62,45 @@ func (b *gatewayLaunchBox) Run(ctx context.Context, command string) ([]byte, err
 		return []byte("/home/template/.codex"), nil
 	}
 	return b.remote.Run(ctx, command)
+}
+
+func TestGatewayPreparationPreservesSandboxErrors(t *testing.T) {
+	for _, target := range []error{harness.ErrNotFound, harness.ErrRejected, harness.ErrEnvironmentRejected} {
+		t.Run(target.Error(), func(t *testing.T) {
+			s, box, a, e := gatewayExecutor(t)
+			box.preparationError = target
+			// tick() returns the preparation result; Tick() owns shared error
+			// classification and must see the original sandbox sentinel.
+			err := e.tick(t.Context())
+			if !errors.Is(err, target) || box.startCalls != 0 {
+				t.Fatalf("sandbox error replaced: %v", err)
+			}
+			if errors.Is(target, harness.ErrNotFound) {
+				box.state = "lost"
+				if err := e.Tick(t.Context()); err != nil {
+					t.Fatal(err)
+				}
+				record, run, err := s.Read(t.Context(), a.SessionID)
+				if err != nil || run != nil || record.SandboxState != "unavailable" || record.SlotReserved {
+					t.Fatal("sandbox loss not settled atomically", err)
+				}
+				finished, err := s.Run(t.Context(), a.SessionID, a.RunID)
+				if err != nil || finished.Error == nil || finished.Error.Code != "sandbox_lost" {
+					t.Fatal("sandbox loss misclassified", err)
+				}
+			} else {
+				err := e.Tick(t.Context())
+				failure, ok := errors.AsType[*harness.ExecutionError](err)
+				code := "harness_failed"
+				if errors.Is(target, harness.ErrEnvironmentRejected) {
+					code = "environment_unavailable"
+				}
+				if !ok || failure.Code != code {
+					t.Fatalf("sandbox rejection misclassified: %v", err)
+				}
+			}
+		})
+	}
 }
 func (b *gatewayLaunchBox) Write(ctx context.Context, path string, raw []byte) error {
 	switch b.fault {
