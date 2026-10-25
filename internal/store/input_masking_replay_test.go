@@ -3,6 +3,7 @@
 package store
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -11,11 +12,12 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
-	"syscall"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/orpheus-agents/orpheus/internal/config"
 	"github.com/orpheus-agents/orpheus/internal/session"
 )
@@ -167,8 +169,33 @@ func TestMaskerSecretRotationAndOrdinaryIsolation(t *testing.T) {
 	}
 }
 
-// A FIFO is a deterministic token-read barrier: opening its writer proves that
-// admission has passed its first durable replay and is waiting on the secret.
+// Pause after the initial durable replay read, before loading the invalid token.
+type tokenReplayBarrier struct {
+	entered, release chan struct{}
+	used             atomic.Bool
+}
+
+type tokenReplayBarrierKey struct{}
+
+func (b *tokenReplayBarrier) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
+	if strings.HasPrefix(data.SQL, "-- name: GetIdempotency :one\n") && b.used.CompareAndSwap(false, true) {
+		return context.WithValue(ctx, tokenReplayBarrierKey{}, true)
+	}
+	return ctx
+}
+
+func (b *tokenReplayBarrier) TraceQueryEnd(ctx context.Context, _ *pgx.Conn, _ pgx.TraceQueryEndData) {
+	if ctx.Value(tokenReplayBarrierKey{}) == true {
+		// The initial replay SELECT has finished with no row. Pause before Token,
+		// so another replica can commit without depending on special-file I/O.
+		close(b.entered)
+		select {
+		case <-b.release:
+		case <-ctx.Done():
+		}
+	}
+}
+
 func TestConcurrentReplayOnTokenFailure(t *testing.T) {
 	for _, race := range []string{"same", "different", "absent"} {
 		t.Run(race, func(t *testing.T) {
@@ -177,10 +204,24 @@ func TestConcurrentReplayOnTokenFailure(t *testing.T) {
 				_ = json.NewEncoder(w).Encode(map[string]any{"masked_texts": []string{"masked"}})
 			}))
 			defer masker.Close()
-			s.Profiles.InputMasker = config.InputMasker{URL: masker.URL, TimeoutSeconds: 1, TokenFile: filepath.Join(t.TempDir(), "token-fifo")}
-			if err := syscall.Mkfifo(s.Profiles.InputMasker.TokenFile, 0600); err != nil {
+			s.Profiles.InputMasker = config.InputMasker{URL: masker.URL, TimeoutSeconds: 1, TokenFile: filepath.Join(t.TempDir(), "invalid-token")}
+			if err := os.WriteFile(s.Profiles.InputMasker.TokenFile, []byte("\n"), 0600); err != nil {
 				t.Fatal(err)
 			}
+			other := *s
+			other.Profiles.InputMasker.TokenFile = ""
+			barrier := &tokenReplayBarrier{entered: make(chan struct{}), release: make(chan struct{})}
+			cfg := s.Pool.Config()
+			cfg.ConnConfig.Tracer = barrier
+			pool, err := pgxpool.NewWithConfig(t.Context(), cfg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer pool.Close()
+			s.Pool = pool
+			var once sync.Once
+			unblock := func() { once.Do(func() { close(barrier.release) }) }
+			defer unblock()
 			p := s.Profiles.Profiles["default"]
 			p.MaskInput = true
 			s.Profiles.Profiles["default"] = p
@@ -191,30 +232,14 @@ func TestConcurrentReplayOnTokenFailure(t *testing.T) {
 			}
 			done := make(chan result, 1)
 			go func() { a, err := s.Accept(t.Context(), req); done <- result{a, err} }()
-			opened := make(chan *os.File, 1)
-			go func() {
-				f, err := os.OpenFile(s.Profiles.InputMasker.TokenFile, os.O_WRONLY, 0600)
-				if err != nil {
-					opened <- nil
-					return
-				}
-				opened <- f
-			}()
-			var writer *os.File
 			select {
-			case writer = <-opened:
-				if writer == nil {
-					t.Fatal("token barrier failed")
-				}
+			case <-barrier.entered:
 			case <-time.After(5 * time.Second):
-				t.Fatal("token reader not reached")
+				t.Fatal("initial replay barrier not reached")
 			}
-			defer func() { _ = writer.Close() }()
 			var accepted session.Acceptance
 			if race != "absent" {
 				// Same policy and DB, independent secret source, as on another API replica.
-				other := *s
-				other.Profiles.InputMasker.TokenFile = ""
 				second := req
 				if race == "different" {
 					create := *req.Create
@@ -227,11 +252,13 @@ func TestConcurrentReplayOnTokenFailure(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			if _, err := writer.WriteString("\n"); err != nil {
-				t.Fatal(err)
+			unblock()
+			var got result
+			select {
+			case got = <-done:
+			case <-time.After(5 * time.Second):
+				t.Fatal("token failure replay did not finish")
 			}
-			_ = writer.Close()
-			got := <-done
 			switch race {
 			case "same":
 				if got.err != nil || got.a != accepted {

@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"syscall"
 )
 
 // InputMasker is an operator-only, trusted-side service. It is never included
@@ -45,11 +46,17 @@ func (m InputMasker) Token() (string, error) {
 	case m.TokenEnv != "":
 		token = os.Getenv(m.TokenEnv)
 	case m.TokenFile != "":
-		file, err := os.Open(m.TokenFile)
+		// Open without waiting for a FIFO peer, then inspect the opened inode.
+		// A path-based Stat before open would race with secret rotation/replacement.
+		file, err := os.OpenFile(m.TokenFile, os.O_RDONLY|syscall.O_NONBLOCK, 0)
 		if err != nil {
 			return "", errors.New("input masker token unavailable")
 		}
 		defer func() { _ = file.Close() }()
+		info, err := file.Stat()
+		if err != nil || !info.Mode().IsRegular() {
+			return "", errors.New("input masker token unavailable")
+		}
 		raw, err := io.ReadAll(io.LimitReader(file, maxTokenBytes+1))
 		if err != nil {
 			return "", errors.New("input masker token unavailable")

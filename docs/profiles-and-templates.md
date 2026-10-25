@@ -137,7 +137,9 @@ admission warnings diagnose the failure. The existing internal
 does not probe HTTP reachability. `/ready` and `/health` remain process probes.
 Credentials are
 never included in errors, session snapshots, sandbox environment references or
-request arguments. Token files may have a trailing newline. For any HTTP address
+request arguments. Token files must be regular files (symlinks to regular files
+are supported) and may have a trailing newline. Special files, including FIFOs,
+are rejected without waiting for a writer or data. For any HTTP address
 outside loopback, API startup logs a warning without the token or URL, even when
 no access token is configured;
 HTTP remains allowed for the trusted private network. Rotate the referenced
