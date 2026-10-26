@@ -23,10 +23,11 @@ import (
 
 var envName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 var accountID = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]*$`)
-var reserved = strings.Fields(`ALL_PROXY NO_PROXY HTTP_PROXY HTTPS_PROXY all_proxy no_proxy http_proxy https_proxy HOME CODEX_HOME ORPHEUS_LAUNCH_ID ORPHEUS_HOOK_OPERATION_ID ORPHEUS_SESSION_ID ORPHEUS_WORKSPACE_PATH ORPHEUS_RUN_ID ORPHEUS_INPUT_FINGERPRINT ORPHEUS_AGENT_STATUS ORPHEUS_STOP_REASON ORPHEUS_BROWSER_AUTH ORPHEUS_PUBLIC_URL SAML_SP_ENTITY_ID SAML_IDP_METADATA_FILE SAML_SP_CERT_FILE SAML_SP_KEY_FILE BROWSER_SESSION_TTL_SECONDS PUBLIC_API_KEYS OPENAI_API_KEY CODEX_API_KEY OPENAI_BASE_URL OPENAI_ORG_ID OPENAI_ORGANIZATION OPENAI_PROJECT_ID CHATGPT_BASE_URL ENV_ENCRYPTION_KEY AGENTBOX_API_KEY`)
+var reserved = strings.Fields(`ALL_PROXY NO_PROXY HTTP_PROXY HTTPS_PROXY all_proxy no_proxy http_proxy https_proxy HOME CODEX_HOME ORPHEUS_LAUNCH_ID ORPHEUS_HOOK_OPERATION_ID ORPHEUS_SESSION_ID ORPHEUS_WORKSPACE_PATH ORPHEUS_RUN_ID ORPHEUS_INPUT_FINGERPRINT ORPHEUS_AGENT_STATUS ORPHEUS_STOP_REASON ORPHEUS_BROWSER_AUTH ORPHEUS_PUBLIC_URL SAML_SP_ENTITY_ID SAML_IDP_METADATA_FILE SAML_SP_CERT_FILE SAML_SP_KEY_FILE BROWSER_SESSION_TTL_SECONDS PUBLIC_API_KEYS OPENAI_API_KEY CODEX_API_KEY OPENAI_BASE_URL OPENAI_ORG_ID OPENAI_ORGANIZATION OPENAI_PROJECT_ID CHATGPT_BASE_URL ENV_ENCRYPTION_KEY AGENTBOX_API_KEY COUNSEL_GATEWAY_KEY`)
 
 type Auth struct {
 	Mode      string `toml:"mode"`
+	BaseURL   string `toml:"base_url"`
 	AccountID string `toml:"account_id"`
 	APIKeyEnv string `toml:"api_key_env"`
 	Store     string `toml:"store"`
@@ -42,6 +43,7 @@ type Template struct {
 	Description *string `toml:"description"`
 }
 type Profile struct {
+	MaskInput    bool         `toml:"mask_input"`
 	Description  *string      `toml:"description"`
 	Harness      string       `toml:"harness"`
 	Model        *string      `toml:"model"`
@@ -50,6 +52,7 @@ type Profile struct {
 	Auth         Auth         `toml:"auth"`
 }
 type Profiles struct {
+	InputMasker      InputMasker                        `toml:"input_masker"`
 	Services         map[string]Service                 `toml:"services"`
 	Templates        map[string]Template                `toml:"templates"`
 	Profiles         map[string]Profile                 `toml:"profiles"`
@@ -60,9 +63,11 @@ func ReadProfiles(r io.Reader) (Profiles, error) {
 	// Presence matters: an omitted default and an explicitly empty value are
 	// different, as are forbidden fields in either authentication variant.
 	var source struct {
-		Services  map[string]Service  `toml:"services"`
-		Templates map[string]Template `toml:"templates"`
-		Profiles  map[string]struct {
+		InputMasker InputMasker         `toml:"input_masker"`
+		Services    map[string]Service  `toml:"services"`
+		Templates   map[string]Template `toml:"templates"`
+		Profiles    map[string]struct {
+			MaskInput   bool    `toml:"mask_input"`
 			Description *string `toml:"description"`
 			Harness     string  `toml:"harness"`
 			Model       *string `toml:"model"`
@@ -75,6 +80,7 @@ func ReadProfiles(r io.Reader) (Profiles, error) {
 			Instructions string `toml:"instructions"`
 			Auth         struct {
 				Mode      string  `toml:"mode"`
+				BaseURL   *string `toml:"base_url"`
 				AccountID *string `toml:"account_id"`
 				APIKeyEnv *string `toml:"api_key_env"`
 				Store     *string `toml:"store"`
@@ -90,6 +96,10 @@ func ReadProfiles(r io.Reader) (Profiles, error) {
 	}
 	p := Profiles{Profiles: map[string]Profile{}, CredentialStores: map[string]session.CredentialStore{}}
 	if err := toml.NewDecoder(r).DisallowUnknownFields().Decode(&source); err != nil {
+		return p, err
+	}
+	p.InputMasker = source.InputMasker
+	if err := p.InputMasker.validate(); err != nil {
 		return p, err
 	}
 	if len(source.Profiles) == 0 {
@@ -124,7 +134,10 @@ func ReadProfiles(r io.Reader) (Profiles, error) {
 		p.CredentialStores[name] = s
 	}
 	for name, raw := range source.Profiles {
-		v := Profile{Description: normalizedDescription(raw.Description), Harness: raw.Harness, Model: raw.Model, Instructions: raw.Instructions, Auth: Auth{Mode: raw.Auth.Mode}}
+		v := Profile{MaskInput: raw.MaskInput, Description: normalizedDescription(raw.Description), Harness: raw.Harness, Model: raw.Model, Instructions: raw.Instructions, Auth: Auth{Mode: raw.Auth.Mode}}
+		if v.MaskInput && p.InputMasker.URL == "" {
+			return p, errors.New("mask_input requires input_masker configuration")
+		}
 		for _, option := range []struct {
 			name   string
 			value  *string
@@ -151,7 +164,17 @@ func ReadProfiles(r io.Reader) (Profiles, error) {
 				return p, errors.New("invalid API key profile")
 			}
 			v.Auth.APIKeyEnv = *raw.Auth.APIKeyEnv
+			if raw.Auth.BaseURL != nil {
+				u, err := url.Parse(*raw.Auth.BaseURL)
+				if err != nil || u.Scheme != "https" || u.Hostname() == "" || u.User != nil || u.RawQuery != "" || u.ForceQuery || strings.Contains(*raw.Auth.BaseURL, "#") {
+					return p, errors.New("invalid API key base URL")
+				}
+				v.Auth.BaseURL = *raw.Auth.BaseURL
+			}
 		case "account":
+			if raw.Auth.BaseURL != nil {
+				return p, errors.New("base URL is not supported for account profiles")
+			}
 			if raw.Auth.Store == nil || *raw.Auth.Store == "" || raw.Auth.Key == nil || *raw.Auth.Key == "" || raw.Auth.APIKeyEnv != nil || raw.Auth.AccountID == nil || len(*raw.Auth.AccountID) > 128 || !accountID.MatchString(*raw.Auth.AccountID) {
 				return p, errors.New("invalid account profile")
 			}
@@ -161,6 +184,9 @@ func ReadProfiles(r io.Reader) (Profiles, error) {
 			}
 		default:
 			return p, errors.New("invalid authentication mode")
+		}
+		if p.InputMasker.TokenEnv != "" && v.Auth.APIKeyEnv == p.InputMasker.TokenEnv {
+			return p, errors.New("input masker token cannot be used as model credentials")
 		}
 		p.Profiles[name] = v
 	}
@@ -362,7 +388,7 @@ func Resolve(in session.ConfigurationInput, p Profiles, allowlist []string, defa
 			return out, invalid("Provider server secret cannot be used as model credentials.", "configuration", "agent", "profile")
 		}
 	}
-	creds := session.Credentials{Mode: profile.Auth.Mode, AccountID: profile.Auth.AccountID, APIKeyEnv: profile.Auth.APIKeyEnv, Key: profile.Auth.Key}
+	creds := session.Credentials{Mode: profile.Auth.Mode, AccountID: profile.Auth.AccountID, APIKeyEnv: profile.Auth.APIKeyEnv, Key: profile.Auth.Key, BaseURL: profile.Auth.BaseURL}
 	if profile.Auth.Mode == "account" {
 		creds.Store = new(p.CredentialStores[profile.Auth.Store])
 	}
@@ -529,6 +555,11 @@ func (s Settings) Runtime(api bool) (Profiles, *secret.Cipher, error) {
 	p, err := LoadProfiles(s.ConfigFile)
 	if err != nil {
 		return p, nil, err
+	}
+	if api {
+		if err := p.InputMasker.runtime(); err != nil {
+			return p, nil, err
+		}
 	}
 	c, err := secret.New(s.EnvEncryptionKey)
 	return p, c, err

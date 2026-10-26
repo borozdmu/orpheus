@@ -281,6 +281,19 @@ func (e *Executor) ensureHarness(ctx context.Context, record *store.SessionRecor
 			}
 			config.AddSandboxProxy(env, e.Store.Settings.SandboxProxyURL)
 			env["ORPHEUS_LAUNCH_ID"] = o.ID.String()
+			if preparer, ok := driver.(harness.LaunchPreparer); ok {
+				if err := preparer.PrepareLaunch(ctx, cfg.Credentials); err != nil {
+					// No Start was sent. Finish explicitly rather than poisoning
+					// launch recovery with an uncertain pre-launch network call.
+					if ctx.Err() != nil {
+						return ctx.Err() // shutdown leaves pending setup safely repeatable
+					}
+					if errors.Is(err, harness.ErrNotFound) || errors.Is(err, harness.ErrRejected) {
+						return err // Tick owns sandbox loss and rejection classification.
+					}
+					return harness.Failure("environment_unavailable", "Harness configuration preparation failed.")
+				}
+			}
 			result, err := e.invoke(ctx, o, func() (operationResult, error) {
 				pid, err := driver.Launch(ctx, env, *record.Workspace, cfg.Credentials)
 				return operationResult{PID: pid}, err

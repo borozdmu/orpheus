@@ -17,6 +17,7 @@ import (
 )
 
 type Driver struct {
+	preparedGateway string
 	rpc             *RPC
 	limit           int
 	completed       map[string]bool
@@ -38,6 +39,7 @@ func New(s harness.Sandbox, timeout time.Duration, limit int) *Driver {
 }
 
 var _ harness.Driver = (*Driver)(nil)
+var _ harness.LaunchPreparer = (*Driver)(nil)
 var _ harness.AccountLimitsReader = (*Driver)(nil)
 
 func (d *Driver) StateDir(ctx context.Context) (string, error) {
@@ -52,18 +54,35 @@ func (d *Driver) StateDir(ctx context.Context) (string, error) {
 	return home, nil
 }
 func (d *Driver) Launch(ctx context.Context, env map[string]string, cwd string, source session.Credentials) (int, error) {
+	custom := source.Mode == "api_key" && source.BaseURL != ""
+	if custom {
+		if d.preparedGateway != source.BaseURL {
+			return 0, harness.Failure("environment_unavailable", "Gateway configuration was not prepared.")
+		}
+		key := os.Getenv(source.APIKeyEnv)
+		if key == "" {
+			return 0, harness.Failure("credentials_unavailable", "Gateway API key is unavailable.")
+		}
+		env = maps.Clone(env)
+		if env == nil {
+			env = map[string]string{}
+		}
+		env["COUNSEL_GATEWAY_KEY"] = key
+	}
 	mode := "api"
 	if source.Mode == "account" {
 		mode = "chatgpt"
 	}
 	var command strings.Builder
 	command.WriteString("exec codex")
-	for _, option := range []string{
-		`cli_auth_credentials_store="file"`,
-		`forced_login_method="` + mode + `"`,
+	options := []string{
 		`approval_policy="never"`,
 		`sandbox_mode="danger-full-access"`,
-	} {
+	}
+	if !custom {
+		options = append(options, `cli_auth_credentials_store="file"`, `forced_login_method="`+mode+`"`)
+	}
+	for _, option := range options {
 		command.WriteString(" -c " + harness.Quote(option))
 	}
 	return d.rpc.Launch(ctx, command.String()+" app-server", env, cwd)
@@ -73,7 +92,7 @@ func (d *Driver) Initialize(ctx context.Context, source session.Credentials, log
 	if err := d.rpc.Initialize(ctx); err != nil {
 		return err
 	}
-	if login && source.Mode == "api_key" {
+	if login && source.Mode == "api_key" && source.BaseURL == "" {
 		key := os.Getenv(source.APIKeyEnv)
 		if key == "" {
 			return harness.Failure("credentials_unavailable", "Provider API key is unavailable.")

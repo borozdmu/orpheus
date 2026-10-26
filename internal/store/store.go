@@ -507,6 +507,9 @@ func selectFinalMessage(ctx context.Context, tx pgx.Tx, r *RunRecord) error {
 const maxAdmissionMessages = 256
 
 type Admission struct {
+	policySession    *SessionRecord
+	inputMasked      bool
+	requestDigest    string
 	AccessContext    *session.AccessContext
 	InputSubjects    []session.AccessSubject
 	InputFingerprint *string
@@ -603,9 +606,44 @@ func fingerprint(a Admission) (string, error) {
 	return hex.EncodeToString(h[:]), nil
 }
 
-// Accept locks idempotency first, then capacity (except steer), then the session
+func (a Admission) validate() error {
+	if len(a.Messages) == 0 {
+		problem := session.Problem(422, "validation_error", "At least one message is required.")
+		problem.Problem.Details = []session.Detail{{Path: []any{"body", "messages"}, Code: "required"}}
+		return problem
+	}
+	if len(a.Messages) > maxAdmissionMessages {
+		problem := session.Problem(422, "validation_error", "Too many messages.")
+		problem.Problem.Details = []session.Detail{{Path: []any{"body", "messages"}, Code: "invalid_value"}}
+		return problem
+	}
+	if err := a.validateExternal(); err != nil {
+		return err
+	}
+	if a.AccessContext != nil {
+		if err := a.AccessContext.Validate(); err != nil {
+			return err
+		}
+	}
+	for i, message := range a.Messages {
+		if err := config.ValidateText(message.Text, i); err != nil {
+			return err
+		}
+		if len(message.Metadata) > 0 {
+			var object map[string]json.RawMessage
+			if err := json.Unmarshal(message.Metadata, &object); err != nil || object == nil {
+				problem := session.Problem(422, "validation_error", "Message metadata must be a JSON object.")
+				problem.Problem.Details = []session.Detail{{Path: []any{"body", "messages", i, "metadata"}, Code: "invalid_type"}}
+				return problem
+			}
+		}
+	}
+	return nil
+}
+
+// accept locks idempotency first, then capacity (except steer), then the session
 // row. Mutate follows the same capacity-before-session order.
-func (s *Store) Accept(ctx context.Context, a Admission) (session.Acceptance, error) {
+func (s *Store) accept(ctx context.Context, a Admission) (session.Acceptance, error) {
 	var result session.Acceptance
 	if a.Create != nil {
 		a.Messages = a.Create.Messages
@@ -615,36 +653,8 @@ func (s *Store) Accept(ctx context.Context, a Admission) (session.Acceptance, er
 		a.Services = a.Create.Services
 		a.AccessContext = a.Create.AccessContext
 	}
-	if len(a.Messages) == 0 {
-		problem := session.Problem(422, "validation_error", "At least one message is required.")
-		problem.Problem.Details = []session.Detail{{Path: []any{"body", "messages"}, Code: "required"}}
-		return result, problem
-	}
-	if len(a.Messages) > maxAdmissionMessages {
-		problem := session.Problem(422, "validation_error", "Too many messages.")
-		problem.Problem.Details = []session.Detail{{Path: []any{"body", "messages"}, Code: "invalid_value"}}
-		return result, problem
-	}
-	if err := a.validateExternal(); err != nil {
+	if err := a.validate(); err != nil {
 		return result, err
-	}
-	if a.AccessContext != nil {
-		if err := a.AccessContext.Validate(); err != nil {
-			return result, err
-		}
-	}
-	for i, message := range a.Messages {
-		if err := config.ValidateText(message.Text, i); err != nil {
-			return result, err
-		}
-		if len(message.Metadata) > 0 {
-			var object map[string]json.RawMessage
-			if err := json.Unmarshal(message.Metadata, &object); err != nil || object == nil {
-				problem := session.Problem(422, "validation_error", "Message metadata must be a JSON object.")
-				problem.Problem.Details = []session.Detail{{Path: []any{"body", "messages", i, "metadata"}, Code: "invalid_type"}}
-				return result, problem
-			}
-		}
 	}
 	op, resource := "create", "sessions"
 	if a.SessionID != uuid.Nil {
@@ -656,6 +666,9 @@ func (s *Store) Accept(ctx context.Context, a Admission) (session.Acceptance, er
 	digest, err := fingerprint(a)
 	if err != nil {
 		return result, err
+	}
+	if a.requestDigest != "" {
+		digest = a.requestDigest
 	}
 	if prior, found, err := s.replay(ctx, s.Pool, a, op, resource, digest); err != nil || found {
 		return prior, err
@@ -701,6 +714,7 @@ func (s *Store) Accept(ctx context.Context, a Admission) (session.Acceptance, er
 			if err != nil {
 				return err
 			}
+			resolved.InputMasked = a.inputMasked
 			id := uuid.New()
 			token, err := s.Cipher.Encrypt(id, a.Create.Configuration.Sandbox.Env)
 			if err != nil {

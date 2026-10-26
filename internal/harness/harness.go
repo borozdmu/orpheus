@@ -116,6 +116,13 @@ type Driver interface {
 	Close() error
 }
 
+// LaunchPreparer performs idempotent setup before the durable sending boundary.
+// Once Launch is invoked its process-start outcome may be unknown and it must
+// not be blindly retried. Other drivers need not implement preparation.
+type LaunchPreparer interface {
+	PrepareLaunch(context.Context, session.Credentials) error
+}
+
 // AccountLimitsReader is optional; other harnesses need not implement it.
 type AccountLimitsReader interface {
 	ReadAccountLimits(context.Context) (accountlimits.Snapshot, error)

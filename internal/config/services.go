@@ -52,6 +52,7 @@ func (p Profiles) EnvironmentAllowlist(explicit []string) []string {
 			names = slices.DeleteFunc(names, func(name string) bool { return name == service.Provider.SecretEnv })
 		}
 	}
+	names = slices.DeleteFunc(names, func(name string) bool { return name == p.InputMasker.TokenEnv })
 	slices.Sort(names)
 	return slices.Compact(names)
 }

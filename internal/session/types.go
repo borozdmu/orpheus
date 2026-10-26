@@ -135,12 +135,14 @@ type CredentialStore struct {
 }
 type Credentials struct {
 	Mode      string           `json:"mode" toml:"mode"`
+	BaseURL   string           `json:"base_url,omitzero" toml:"base_url"`
 	AccountID string           `json:"account_id,omitzero" toml:"account_id"`
 	APIKeyEnv string           `json:"api_key_env" toml:"api_key_env"`
 	Store     *CredentialStore `json:"store" toml:"-"`
 	Key       string           `json:"key" toml:"key"`
 }
 type ResolvedConfiguration struct {
+	InputMasked bool          `json:"input_masked,omitzero"`
 	Version     int           `json:"version"`
 	Harness     string        `json:"harness"`
 	Public      Configuration `json:"public"`
