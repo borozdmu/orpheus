@@ -51,6 +51,10 @@ For database-backed Prometheus metrics on the internal system listener, see
 [service metrics](docs/service-metrics.md).
 Run `make stop` to stop the project; database data is preserved.
 
+Service credential issue and renewal allow up to 60 seconds for the provider's
+fresh access projection, bounded by the caller's earlier deadline. This does
+not extend credential lifetimes or retry an uncertain issuance.
+
 Run and hook deadlines are independent of the sandbox timeout. The worker creates
 and reconnects sandboxes with a five-minute lease and renews it once per minute
 while preparing, executing or finalizing a run. A one-hour run does not require

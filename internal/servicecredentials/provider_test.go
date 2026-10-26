@@ -1,18 +1,62 @@
 package servicecredentials
 
 import (
+	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
 	"slices"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/orpheus-agents/orpheus/internal/session"
 )
+
+type delayedGrantTransport struct{ delay time.Duration }
+
+func (r delayedGrantTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	select {
+	case <-req.Context().Done():
+		return nil, req.Context().Err()
+	case <-time.After(r.delay):
+		body, err := json.Marshal(testGrant())
+		if err != nil {
+			return nil, err
+		}
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(string(body))), Request: req}, nil
+	}
+}
+
+func TestProviderProjectionDeadline(t *testing.T) {
+	t.Setenv("TEST_PROVIDER_KEY", strings.Repeat("k", 32))
+	for _, test := range []struct {
+		name                           string
+		delay, callerDeadline, elapsed time.Duration
+		wantError                      bool
+	}{
+		{"fresh projection", 31 * time.Second, 2 * time.Minute, 31 * time.Second, false},
+		{"provider deadline", 61 * time.Second, 2 * time.Minute, 60 * time.Second, true},
+		{"caller cancellation", 31 * time.Second, 2 * time.Second, 2 * time.Second, true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				ctx, cancel := context.WithTimeout(t.Context(), test.callerDeadline)
+				defer cancel()
+				client := Client{HTTP: &http.Client{Transport: delayedGrantTransport{test.delay}}}
+				started := time.Now()
+				_, err := client.Issue(ctx, testConfig("https://provider.invalid/credentials"), "kord", session.AccessContext{InvocationID: uuid.New()})
+				if (err != nil) != test.wantError || time.Since(started) != test.elapsed {
+					t.Fatalf("error=%v elapsed=%v, want error=%v elapsed=%v", err, time.Since(started), test.wantError, test.elapsed)
+				}
+			})
+		})
+	}
+}
 
 func testConfig(endpoint string) Config {
 	return Config{Endpoint: endpoint, SecretEnv: "TEST_PROVIDER_KEY", ContextFields: []string{"subject", "scope_context", "context_observed_at"}, TokenFile: "~/.kord/run.token"}
