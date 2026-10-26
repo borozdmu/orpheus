@@ -60,6 +60,10 @@ type Grant struct {
 // future timestamp; it never extends an expired grant or changes its deadline.
 const maxProviderClockSkew = 5 * time.Second
 
+// Admission includes the provider's bounded, fresh audience projection.
+// Leave room for its internal RPC deadline; caller cancellation still wins.
+const providerRequestTimeout = 60 * time.Second
+
 func (g Grant) validLifetime(now time.Time) bool {
 	return now.Before(g.ExpiresAt) && !g.ExpiresAt.After(g.RunExpiresAt) &&
 		!g.ExpiresAt.After(now.Add(300*time.Second+maxProviderClockSkew)) &&
@@ -92,7 +96,7 @@ func (c Client) call(ctx context.Context, cfg Config, body any) (Grant, error) {
 	if err != nil {
 		return fail()
 	}
-	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, providerRequestTimeout)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, cfg.Endpoint, bytes.NewReader(raw))
 	if err != nil {
@@ -104,7 +108,7 @@ func (c Client) call(ctx context.Context, cfg Config, body any) (Grant, error) {
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.Proxy = nil
 	defer transport.CloseIdleConnections()
-	client := http.Client{Transport: transport, Timeout: 10 * time.Second}
+	client := http.Client{Transport: transport, Timeout: providerRequestTimeout}
 	if c.HTTP != nil {
 		client = *c.HTTP
 	}
