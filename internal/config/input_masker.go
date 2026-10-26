@@ -46,17 +46,11 @@ func (m InputMasker) Token() (string, error) {
 	case m.TokenEnv != "":
 		token = os.Getenv(m.TokenEnv)
 	case m.TokenFile != "":
-		// Open without waiting for a FIFO peer, then inspect the opened inode.
-		// A path-based Stat before open would race with secret rotation/replacement.
-		file, err := os.OpenFile(m.TokenFile, os.O_RDONLY|syscall.O_NONBLOCK, 0)
+		file, err := openInputMaskerTokenFile(m.TokenFile)
 		if err != nil {
 			return "", errors.New("input masker token unavailable")
 		}
 		defer func() { _ = file.Close() }()
-		info, err := file.Stat()
-		if err != nil || !info.Mode().IsRegular() {
-			return "", errors.New("input masker token unavailable")
-		}
 		raw, err := io.ReadAll(io.LimitReader(file, maxTokenBytes+1))
 		if err != nil {
 			return "", errors.New("input masker token unavailable")
@@ -85,4 +79,23 @@ func (m InputMasker) runtime() error {
 		slog.Warn("Input masker sends original text over HTTP outside loopback; configure HTTPS or protect the trusted network")
 	}
 	return nil
+}
+
+func openInputMaskerTokenFile(path string) (*os.File, error) {
+	// Open without waiting for a FIFO peer, then inspect the opened inode.
+	// A path-based Stat before open would race with secret rotation/replacement.
+	file, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK, 0)
+	if err != nil {
+		return nil, err
+	}
+	info, err := file.Stat()
+	if err != nil || !info.Mode().IsRegular() {
+		_ = file.Close()
+		return nil, errors.New("input masker token unavailable")
+	}
+	if err := setInputMaskerFileBlocking(file); err != nil {
+		_ = file.Close()
+		return nil, err
+	}
+	return file, nil
 }

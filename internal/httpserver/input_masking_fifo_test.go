@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"syscall"
 	"testing"
@@ -31,13 +32,13 @@ func TestFIFOSecretHTTPIsolation(t *testing.T) {
 		ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
 		defer cancel()
 		cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestFIFOSecretHTTPIsolation$")
-		cmd.Env = append(os.Environ(), "ORPHEUS_FIFO_HTTP_CHILD=1", "ORPHEUS_FIFO_DB_URL="+pool.Config().ConnString(), "ORPHEUS_FIFO_DB_SCHEMA="+pool.Config().ConnConfig.RuntimeParams["search_path"])
+		cmd.Env = append(os.Environ(), "ORPHEUS_FIFO_HTTP_CHILD=1", "ORPHEUS_FIFO_HTTP_DIR="+t.TempDir(), "ORPHEUS_FIFO_DB_URL="+pool.Config().ConnString(), "ORPHEUS_FIFO_DB_SCHEMA="+pool.Config().ConnConfig.RuntimeParams["search_path"])
 		if output, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("startup/admission/metrics failed (deadline=%v): %v\n%s", ctx.Err(), err, output)
 		}
 		return
 	}
-	dir := t.TempDir()
+	dir := os.Getenv("ORPHEUS_FIFO_HTTP_DIR")
 	fifo := filepath.Join(dir, "token-fifo")
 	if err := syscall.Mkfifo(fifo, 0600); err != nil {
 		t.Fatal(err)
@@ -126,7 +127,13 @@ api_key_env="KEY"
 		s.Profiles.InputMasker.TokenFile = source
 		ordinary()
 		before := maskingCounts(t, s)
-		for range 5 {
+		// Warm both HTTP connections and the database pool before measuring.
+		if _, err := s.AccountLimits(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+		call("GET", metrics.URL, "")
+		goroutines := runtime.NumGoroutine()
+		for range 50 {
 			code, body := call("POST", server.URL+"/api/v1/sessions", protected)
 			if code != 503 || !strings.Contains(body, "input_masker_unavailable") || strings.Contains(body, source) || strings.Contains(body, "hello") {
 				t.Fatal("unsafe or missing protected failure", code)
@@ -139,6 +146,15 @@ api_key_env="KEY"
 			if code != 200 || !strings.Contains(body, "orpheus_input_masker_secret_available 0\n") || strings.Contains(body, source) {
 				t.Fatal("unsafe or unavailable metrics", code)
 			}
+		}
+		// Idle connection/server goroutines can finish asynchronously; runtime and
+		// HTTP scheduling get a small allowance, not one goroutine per scrape.
+		deadline := time.Now().Add(time.Second)
+		for runtime.NumGoroutine() > goroutines+4 && time.Now().Before(deadline) {
+			time.Sleep(10 * time.Millisecond)
+		}
+		if after := runtime.NumGoroutine(); after > goroutines+4 {
+			t.Fatalf("diagnostics/metrics leaked goroutines: before=%d after=%d", goroutines, after)
 		}
 		if maskingCounts(t, s) != before {
 			t.Fatal("failed protected admission or diagnostics persisted data")
