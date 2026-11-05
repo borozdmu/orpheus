@@ -1462,7 +1462,9 @@ type Run struct {
 	AgentStatus       *RunAgentStatus `json:"agent_status"`
 	CancelRequestedAt *time.Time      `json:"cancel_requested_at"`
 	CreatedAt         time.Time       `json:"created_at"`
-	DeadlineAt        *time.Time      `json:"deadline_at"`
+
+	// DeadlineAt Fixed at the first dispatch. Protected services can shorten the configured execution timeout to leave the configured cancellation grace and worker polling interval before their earliest absolute credential deadline. Renewal and worker recovery do not extend it.
+	DeadlineAt *time.Time `json:"deadline_at"`
 
 	// EnvFrom Sorted orchestrator environment variable names for this run, including expanded services.
 	EnvFrom []string `json:"env_from"`

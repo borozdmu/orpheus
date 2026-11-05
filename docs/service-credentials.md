@@ -146,6 +146,20 @@ credential ID, scope and absolute deadline. Its operation key derives from the
 saved lease, so a lost response can be retried. The lease is at most 300 seconds;
 the absolute run lifetime is at most 1200 seconds.
 
+At the first model dispatch, the worker fixes the execution deadline to the
+earlier of the configured run timeout and the earliest provider absolute deadline
+minus `CANCEL_GRACE_SECONDS` and `WORKER_POLL_SECONDS`. Time spent preparing the
+sandbox therefore consumes the original provider lifetime. The full configured
+stop window is reserved; if no execution time remains, the worker cancels with
+`run_timeout` before dispatch and performs normal cleanup. Renewal, worker restart
+and later worker setting changes do not move a saved execution deadline. Runs
+without protected services keep their configured timeout.
+
+The reserve allows the existing cancellation path to remove tokens and stop the
+model before the absolute boundary. It does not extend access or disable expiry
+checks: an already expired lease, including one expired during a worker outage,
+still fails closed with `service_credentials_expired`.
+
 The response check tolerates a provider clock up to five seconds ahead, solely
 when bounding future timestamps. It preserves all grant timestamps, rejects
 expired credentials and never extends the execution deadline. Providers enforce
