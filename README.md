@@ -54,6 +54,10 @@ Run `make stop` to stop the project; database data is preserved.
 Service credential issue and renewal allow up to 60 seconds for the provider's
 fresh access projection, bounded by the caller's earlier deadline. This does
 not extend credential lifetimes or retry an uncertain issuance.
+The worker also provides `run.json` beside each protected service's token, with
+the current run ID and the provider-confirmed absolute deadline. Tools can check
+the remaining time before starting a mutation and reserve time for readback.
+The metadata contains no token or access scope; cleanup removes it with the token.
 
 Run and hook deadlines are independent of the sandbox timeout. The worker creates
 and reconnects sandboxes with a five-minute lease and renews it once per minute
