@@ -58,6 +58,10 @@ after a run, Orpheus deletes a single-run sandbox or pauses a reusable one.
 The AgentBox plan's maximum uninterrupted sandbox lifetime still applies:
 lease renewal does not extend that limit.
 
+Paused reusable sandboxes expire after 14 days by default. See
+[sandbox retention](docs/sandbox-retention.md) for configuration, cleanup behavior
+and the continuation API contract.
+
 Initial sandbox creation and connection have a separate, persisted two-minute
 provisioning deadline. Set `SANDBOX_PROVISION_TIMEOUT_SECONDS` to change it for new
 attempts. Cancellation during this stage completes locally even if AgentBox is
