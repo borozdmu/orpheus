@@ -113,8 +113,35 @@ separate encryption domain and session/run bindings. Ordinary database columns
 hold only invocation context and scopes. Tokens do not enter public APIs, events,
 environment variables or shell commands.
 
-Before hooks run, the worker atomically installs a `0600` file in a `0700`
-directory. Renewal starts 60 seconds before expiry and preserves the bearer,
+Before hooks run, the worker installs the `0600` token file and a `0400`
+`run.json` beside it, in a `0700` directory. Both files must be installed before
+hooks or the model start. The metadata contains only:
+
+```json
+{
+  "schema": 1,
+  "run_id": "ba42bfd3-cfae-4397-a117-3038570c84c4",
+  "invocation_id": "a13d5917-7e7c-47a7-b4db-d8a792222038",
+  "run_expires_at": "2026-11-05T12:20:00Z"
+}
+```
+
+`run_id` identifies the core run; it is distinct from the provider's invocation.
+`run_expires_at` is the provider-confirmed absolute deadline, in UTC, preserved
+exactly across worker restoration and renewal. It is not derived from token file
+timestamps, model start time or the execution timeout. There is no renewable lease,
+token, credential identifier, user context or scope in this file. A shorter lease
+can still expire earlier; the provider and worker continue enforcing it.
+
+Tools can match `run_id` to their connector's current run and refuse a mutation
+unless enough time remains for the request and readback. Missing or mismatched
+metadata must not be interpreted as an unlimited lifetime. These files are owned
+by the sandbox user; the mode prevents accidental edits, not hostile code running
+as that same user. Metadata never grants access or replaces provider authorization.
+
+The worker stages both files privately and publishes metadata last. On a partial
+replacement, old metadata is removed before the new token becomes visible.
+Renewal starts 60 seconds before expiry and preserves the bearer,
 credential ID, scope and absolute deadline. Its operation key derives from the
 saved lease, so a lost response can be retried. The lease is at most 300 seconds;
 the absolute run lifetime is at most 1200 seconds.
@@ -129,7 +156,7 @@ Restart restores the saved grant while valid; it does not issue again under old
 model memory. An expired lease stops the sandbox, fails the run with
 `service_credentials_expired` and closes the session to further runs. Unconfirmed
 model state after that stop cannot continue automatically. Cancellation stops
-renewal. Normal cleanup removes the file before pausing, or deletes a single-run
+renewal. Cleanup, cancellation and expiry remove both files before pausing, or delete a single-run
 sandbox. There is no required close/publication callback. Responses and files use
 the invocation's initial rights snapshot; later rights apply to the next run.
 

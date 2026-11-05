@@ -55,12 +55,26 @@ func TestWorkerCredentialLifecycle(t *testing.T) {
 	defer server.Close()
 	cfg := servicecredentials.Config{Endpoint: server.URL, SecretEnv: "WORKER_PROVIDER_KEY", ContextFields: []string{"subject", "scope_context", "context_observed_at"}, TokenFile: "~/.kord/run.token"}
 	s.CredentialClient = servicecredentials.Client{HTTP: server.Client()}
-	workerCredentials(t, s, a, grant, cfg)
+	issued := workerCredentials(t, s, a, grant, cfg)
 	writes, removes := 0, 0
-	r.credentialWrite = func(path string, raw []byte) error {
-		if path != "/home/template/.kord/.run.fixture" || string(raw) != grant.AccessToken {
-			t.Error("wrong token staging")
+	checkWrite := func(path string, raw []byte) {
+		t.Helper()
+		switch path {
+		case "/home/template/.kord/.run.fixture/run.token":
+			if string(raw) != grant.AccessToken {
+				t.Error("wrong token staging")
+			}
+		case "/home/template/.kord/.run.fixture/run.json":
+			var metadata credentialMetadata
+			if err := json.Unmarshal(raw, &metadata); err != nil || metadata.RunID != a.RunID || metadata.InvocationID != issued.Context.InvocationID || !metadata.RunExpiresAt.Equal(grant.RunExpiresAt) || strings.Contains(string(raw), grant.AccessToken) {
+				t.Error("deadline changed or leaked private grant", err)
+			}
+		default:
+			t.Error("wrong credential staging path", path)
 		}
+	}
+	r.credentialWrite = func(path string, raw []byte) error {
+		checkWrite(path, raw)
 		if r.starts != 0 || r.launches != 0 {
 			t.Error("token installed after model started")
 		}
@@ -78,12 +92,15 @@ func TestWorkerCredentialLifecycle(t *testing.T) {
 			return []byte("/home/template/.kord/.run.fixture\n"), nil
 		}
 		if strings.Contains(command, `"$d/run.token"`) {
+			if !strings.Contains(command, `"$d/run.json"`) {
+				t.Error("metadata not removed with token")
+			}
 			removes++
 		}
 		return []byte("/home/template/workspace"), nil
 	}
 	tick(t, e)
-	if writes != 1 || r.starts != 1 || renewals.Load() != 1 {
+	if writes != 2 || r.starts != 1 || renewals.Load() != 1 {
 		t.Fatal("not prepared before launch", writes, r.starts, renewals.Load())
 	}
 	state, err := s.ServiceCredentials(t.Context(), a.SessionID, a.RunID)
@@ -94,15 +111,13 @@ func TestWorkerCredentialLifecycle(t *testing.T) {
 	e.Disconnect()
 	e = executor(a.SessionID, s, r)
 	t.Cleanup(e.Disconnect)
-	r.credentialWrite = func(_ string, raw []byte) error {
-		if string(raw) != grant.AccessToken {
-			t.Error("token changed on restore")
-		}
+	r.credentialWrite = func(path string, raw []byte) error {
+		checkWrite(path, raw)
 		writes++
 		return nil
 	}
 	tick(t, e)
-	if writes != 2 || renewals.Load() != 1 || r.starts != 1 {
+	if writes != 4 || renewals.Load() != 1 || r.starts != 1 {
 		t.Fatal("restart split run", writes, renewals.Load(), r.starts)
 	}
 	if _, err := s.Cancel(t.Context(), a.SessionID, a.RunID); err != nil {
@@ -120,6 +135,16 @@ func TestExpiredCredentialNeverLaunchesOrReissues(t *testing.T) {
 			if started {
 				tick(t, e)
 			}
+			removes := 0
+			r.credentialCommands = func(command string) ([]byte, error) {
+				if strings.Contains(command, `"$d/run.token"`) {
+					if !strings.Contains(command, `"$d/run.json"`) {
+						t.Error("expiry left deadline metadata behind")
+					}
+					removes++
+				}
+				return []byte("/home/template/workspace"), nil
+			}
 			now := time.Now().UTC()
 			cfg := servicecredentials.Config{Endpoint: "https://provider.invalid", SecretEnv: "WORKER_PROVIDER_KEY", ContextFields: []string{"subject", "scope_context", "context_observed_at"}, TokenFile: "~/.kord/run.token"}
 			workerCredentials(t, s, a, servicecredentials.Grant{CredentialID: "grant", AccessToken: "private", ScopeKey: "scope", ExpiresAt: now.Add(-time.Second), RunExpiresAt: now.Add(10 * time.Minute)}, cfg)
@@ -129,26 +154,35 @@ func TestExpiredCredentialNeverLaunchesOrReissues(t *testing.T) {
 			if err != nil || run.Status != session.Failed || run.Error.Code != "service_credentials_expired" || r.starts != starts {
 				t.Fatal("expired grant executed", run, err)
 			}
-			if started && r.pauses == 0 {
+			if started && (r.pauses == 0 || removes == 0) {
 				t.Fatal("live sandbox was not stopped")
 			}
 			tick(t, e)
 		})
 	}
 }
-func TestTokenWriteFailurePreventsModelStart(t *testing.T) {
-	s, r, a, e := setup(t)
-	now := time.Now().UTC()
-	cfg := servicecredentials.Config{Endpoint: "https://provider.invalid", SecretEnv: "WORKER_PROVIDER_KEY", ContextFields: []string{"subject", "scope_context", "context_observed_at"}, TokenFile: "~/.kord/run.token"}
-	workerCredentials(t, s, a, servicecredentials.Grant{CredentialID: "grant", AccessToken: "private", ScopeKey: "scope", ExpiresAt: now.Add(4 * time.Minute), RunExpiresAt: now.Add(15 * time.Minute)}, cfg)
-	r.credentialCommands = func(command string) ([]byte, error) {
-		if strings.Contains(command, "mktemp") {
-			return []byte("/home/template/.kord/.run.fixture"), nil
-		}
-		return []byte("/home/template/workspace"), nil
-	}
-	r.credentialWrite = func(string, []byte) error { return errors.New("write failed") }
-	if err := e.Tick(t.Context()); err == nil || r.starts != 0 || r.launches != 0 {
-		t.Fatal("model launched without token", err, r.starts, r.launches)
+func TestCredentialWriteFailurePreventsModelStart(t *testing.T) {
+	for _, filename := range []string{"run.token", "run.json"} {
+		t.Run(filename, func(t *testing.T) {
+			s, r, a, e := setup(t)
+			now := time.Now().UTC()
+			cfg := servicecredentials.Config{Endpoint: "https://provider.invalid", SecretEnv: "WORKER_PROVIDER_KEY", ContextFields: []string{"subject", "scope_context", "context_observed_at"}, TokenFile: "~/.kord/run.token"}
+			workerCredentials(t, s, a, servicecredentials.Grant{CredentialID: "grant", AccessToken: "private", ScopeKey: "scope", ExpiresAt: now.Add(4 * time.Minute), RunExpiresAt: now.Add(15 * time.Minute)}, cfg)
+			r.credentialCommands = func(command string) ([]byte, error) {
+				if strings.Contains(command, "mktemp") {
+					return []byte("/home/template/.kord/.run.fixture"), nil
+				}
+				return []byte("/home/template/workspace"), nil
+			}
+			r.credentialWrite = func(path string, _ []byte) error {
+				if strings.HasSuffix(path, "/"+filename) {
+					return errors.New("write failed")
+				}
+				return nil
+			}
+			if err := e.Tick(t.Context()); err == nil || r.starts != 0 || r.launches != 0 {
+				t.Fatal("model launched without token", err, r.starts, r.launches)
+			}
+		})
 	}
 }
