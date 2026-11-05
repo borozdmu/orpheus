@@ -966,6 +966,7 @@ components:
                     title: Created At
                     type: string
                 deadline_at:
+                    description: Fixed at the first dispatch. Protected services can shorten the configured execution timeout to leave the configured cancellation grace and worker polling interval before their earliest absolute credential deadline. Renewal and worker recovery do not extend it.
                     anyOf:
                         - format: date-time
                           type: string
