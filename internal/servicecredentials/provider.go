@@ -78,7 +78,11 @@ type State struct {
 	Context session.AccessContext `json:"context"`
 	Entries map[string]Entry      `json:"entries"`
 }
-type Client struct{ HTTP *http.Client }
+type Client struct {
+	HTTP *http.Client
+	// Shared servers resolve issuer keys in the authenticated tenant's configuration.
+	LookupSecret func(string) string
+}
 
 func (c Client) call(ctx context.Context, cfg Config, body any) (Grant, error) {
 	var out Grant
@@ -88,7 +92,11 @@ func (c Client) call(ctx context.Context, cfg Config, body any) (Grant, error) {
 	if cfg.Validate() != nil {
 		return fail()
 	}
-	secret := os.Getenv(cfg.SecretEnv)
+	lookup := c.LookupSecret
+	if lookup == nil {
+		lookup = os.Getenv
+	}
+	secret := lookup(cfg.SecretEnv)
 	if len(secret) < 32 || strings.ContainsAny(secret, "\r\n") {
 		return fail()
 	}
