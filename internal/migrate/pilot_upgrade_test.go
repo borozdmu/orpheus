@@ -75,11 +75,12 @@ func TestUpgradeFromDivergentProvisioningHistories(t *testing.T) {
 			exec("INSERT INTO sessions(id, configuration, slot_reserved) VALUES ($1,'{}',false)", sid)
 			exec("INSERT INTO runs(id,session_id,number) VALUES ($1,$2,1)", rid, sid)
 			exec("INSERT INTO operations(id,session_id,run_id,kind,status) VALUES ($1,$2,$3,'sandbox_create','uncertain')", oid, sid, rid)
-			if source == "pilot23" {
+			switch source {
+			case "pilot23":
 				exec("INSERT INTO messages(id,session_id,run_id,role,text,delivery_status,registered_sequence) VALUES ($1,$2,$3,'user','synthetic','pending',1)", mid, sid, rid)
 				exec("INSERT INTO run_input_subjects VALUES ($1,'{\"id\":\"synthetic\"}')", mid)
 				exec("INSERT INTO run_service_credentials VALUES ($1,$2,'{\"id\":1}','{\"read\":true}','synthetic-ciphertext')", rid, invocation)
-			} else if source == "upstream24" {
+			case "upstream24":
 				exec("UPDATE operations SET deadline_at=created_at+interval '777 seconds' WHERE id=$1", oid)
 			}
 			for range 2 {
