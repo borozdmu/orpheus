@@ -28,26 +28,29 @@ var errStoreAccess = errors.New("session database access failed")
 
 type AccountFactory func(context.Context, harness.Sandbox, string, session.Credentials) (credentials.Sync, error)
 type Executor struct {
-	ID               uuid.UUID
-	Store            *store.Store
-	Platform         harness.Platform
-	NewDriver        DriverFactory
-	NewAccount       AccountFactory
-	RunnerBinary     func(string) ([]byte, error)
-	Limits           *AccountLimitsCollector
-	unregisterLimits func()
-	sandbox          harness.Sandbox
-	driver           harness.Driver
-	account          credentials.Sync
-	snapshot         harness.Snapshot
-	settleRetryAt    time.Time
-	settleRetryDelay time.Duration
-	settleAuthSynced bool
-	timeoutRenewAt   time.Time
-	timeoutRunID     uuid.UUID
-	runnerReady      bool
-	hookTermSent     uuid.UUID
-	clock            func() time.Time
+	credentialsRunID        uuid.UUID
+	credentialsRetryAt      map[string]time.Time
+	credentialsInvocationID uuid.UUID
+	ID                      uuid.UUID
+	Store                   *store.Store
+	Platform                harness.Platform
+	NewDriver               DriverFactory
+	NewAccount              AccountFactory
+	RunnerBinary            func(string) ([]byte, error)
+	Limits                  *AccountLimitsCollector
+	unregisterLimits        func()
+	sandbox                 harness.Sandbox
+	driver                  harness.Driver
+	account                 credentials.Sync
+	snapshot                harness.Snapshot
+	settleRetryAt           time.Time
+	settleRetryDelay        time.Duration
+	settleAuthSynced        bool
+	timeoutRenewAt          time.Time
+	timeoutRunID            uuid.UUID
+	runnerReady             bool
+	hookTermSent            uuid.UUID
+	clock                   func() time.Time
 }
 
 func NewExecutor(id uuid.UUID, s *store.Store, p harness.Platform) *Executor {
@@ -252,6 +255,7 @@ func (e *Executor) Disconnect() {
 		e.account = nil
 	}
 	e.sandbox = nil
+	e.credentialsRunID = uuid.Nil
 	e.runnerReady = false
 	e.hookTermSent = uuid.Nil
 }
@@ -359,6 +363,9 @@ func (e *Executor) tick(ctx context.Context) error {
 		}
 		return e.settleEnvironment(ctx, record)
 	}
+	if done, err := e.serviceCredentials(ctx, record, *run); err != nil || done {
+		return err
+	}
 	if run.Status == session.Accepted {
 		if err := e.Store.Mutate(ctx, e.ID, false, func(tx pgx.Tx, r *store.SessionRecord) error {
 			current, err := store.GetRun(ctx, tx, e.ID, run.ID)
@@ -437,6 +444,9 @@ func (e *Executor) tick(ctx context.Context) error {
 	}
 	if run.ExecutionStartedAt == nil && run.CancelRequestedAt != nil {
 		return nil
+	}
+	if done, err := e.serviceCredentials(ctx, record, *run); err != nil || done {
+		return err
 	}
 	if run.Status == session.Finalizing {
 		return e.finalizeRun(ctx, record, *run)

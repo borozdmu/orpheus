@@ -17,7 +17,7 @@ RUN ln -s /usr/local/lib/node_modules/@redocly/cli/bin/cli.js /usr/local/bin/red
 RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache/go-build \
     go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.14.0 && \
     go install golang.org/x/vuln/cmd/govulncheck@v1.8.0 && \
-    go install golang.org/x/tools/cmd/goimports@v0.48.0
+    go install golang.org/x/tools/cmd/goimports@v0.50.0
 WORKDIR /app
 ARG ORPHEUS_UID=1000
 ARG ORPHEUS_GID=1000
