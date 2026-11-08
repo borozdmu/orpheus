@@ -41,12 +41,23 @@ func (e *Executor) serviceCredentials(ctx context.Context, record store.SessionR
 	}
 	changed := false
 	for code, entry := range state.Entries {
+		if entry.Config.Protocol != "" && !time.Now().Before(e.credentialsRetryAt["audience:"+code]) {
+			if err := e.Store.CredentialClient.Confirm(ctx, entry.Config, state.Context); err != nil {
+				return true, e.expireCredentials(ctx, record, run, state)
+			}
+			e.credentialsRetryAt["audience:"+code] = time.Now().Add(15 * time.Second)
+		}
+	}
+	for code, entry := range state.Entries {
 		if time.Until(entry.Grant.ExpiresAt) > 60*time.Second || entry.Grant.ExpiresAt.Equal(entry.Grant.RunExpiresAt) || time.Now().Before(e.credentialsRetryAt[code]) {
 			continue
 		}
 		e.credentialsRetryAt[code] = time.Now().Add(10 * time.Second)
-		grant, err := e.Store.CredentialClient.Renew(ctx, entry.Config, code, state.Context.InvocationID, entry.Grant)
+		grant, err := e.Store.CredentialClient.RenewConfirmed(ctx, entry.Config, code, state.Context, entry.Grant)
 		if err != nil {
+			if entry.Config.Protocol != "" {
+				return true, e.expireCredentials(ctx, record, run, state)
+			}
 			continue
 		} // Retain the original deadline; no permanent-key fallback.
 		entry.Grant = grant
@@ -78,17 +89,18 @@ func (e *Executor) serviceCredentials(ctx context.Context, record store.SessionR
 // credentialMetadata contains only the immutable deadline and opaque run IDs.
 // The short renewable lease remains enforced by the provider and worker.
 type credentialMetadata struct {
-	Schema       int       `json:"schema"`
-	RunID        uuid.UUID `json:"run_id"`
-	InvocationID uuid.UUID `json:"invocation_id"`
-	RunExpiresAt time.Time `json:"run_expires_at"`
+	AccessProtocol string    `json:"access_protocol,omitzero"`
+	Schema         int       `json:"schema"`
+	RunID          uuid.UUID `json:"run_id"`
+	InvocationID   uuid.UUID `json:"invocation_id"`
+	RunExpiresAt   time.Time `json:"run_expires_at"`
 }
 
 func (e *Executor) installCredentialFile(ctx context.Context, runID, invocationID uuid.UUID, entry servicecredentials.Entry) error {
 	if entry.Config.Validate() != nil || runID == uuid.Nil || invocationID == uuid.Nil || entry.Grant.RunExpiresAt.IsZero() {
 		return harness.Failure("service_credentials_unavailable", "Invalid stored provider configuration.")
 	}
-	metadata, err := json.Marshal(credentialMetadata{Schema: 1, RunID: runID, InvocationID: invocationID, RunExpiresAt: entry.Grant.RunExpiresAt.UTC()})
+	metadata, err := json.Marshal(credentialMetadata{AccessProtocol: entry.Config.Protocol, Schema: 1, RunID: runID, InvocationID: invocationID, RunExpiresAt: entry.Grant.RunExpiresAt.UTC()})
 	if err != nil {
 		return err
 	}
@@ -135,16 +147,16 @@ func (e *Executor) removeCredentialFiles(ctx context.Context, state servicecrede
 	return nil
 }
 func (e *Executor) expireCredentials(ctx context.Context, record store.SessionRecord, run store.RunRecord, state servicecredentials.State) error {
+	// Remove local access and stop execution even when the remote revoke is unavailable.
 	if record.SandboxID != nil {
 		if err := e.ensureSandbox(ctx, &record, &run); err != nil {
 			return err
 		}
-		if err := e.removeCredentialFiles(ctx, state); err != nil {
-			return err
-		}
+		removeErr := e.removeCredentialFiles(ctx, state)
 		// Pause also stops an in-flight hook. Do not resume unconfirmed model memory
 		// after an absolute deadline, even if a new grant would now be available.
-		if err := e.sandbox.Pause(ctx); err != nil {
+		pauseErr := e.sandbox.Pause(ctx)
+		if err := errors.Join(removeErr, pauseErr); err != nil {
 			return err
 		}
 	}
@@ -186,5 +198,9 @@ func (e *Executor) cleanLastCredentials(ctx context.Context) error {
 	if len(state.Entries) == 0 {
 		return nil
 	}
-	return e.removeCredentialFiles(ctx, state)
+	var revokeErrors []error
+	for code, entry := range state.Entries {
+		revokeErrors = append(revokeErrors, e.Store.CredentialClient.Revoke(ctx, entry.Config, code, state.Context.InvocationID, entry.Grant))
+	}
+	return errors.Join(e.removeCredentialFiles(ctx, state), errors.Join(revokeErrors...))
 }

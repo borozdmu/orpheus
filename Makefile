@@ -46,7 +46,7 @@ sqlc-check: tools
 	$(RUN) go test -tags integration -count=1 ./tools/sqlcheck
 
 fix format: tools
-	$(RUN) sh -ec 'gofmt -w client cmd internal tools; goimports -w client cmd internal tools'
+	$(RUN) sh -ec 'gofmt -w agentcontract client cmd internal tools; goimports -w agentcontract client cmd internal tools'
 
 gofix: tools
 	$(RUN) go fix ./...
@@ -64,7 +64,7 @@ deadcode: tools
 	$(RUN) sh -ec 'f=$$(mktemp); trap '\''rm -f "$$f"'\'' EXIT; go tool deadcode -filter="^github.com/orpheus-agents/orpheus/(cmd|internal|tools)(/|$$)" -test -tags=integration,live ./... > "$$f"; if test -s "$$f"; then cat "$$f"; exit 1; fi'
 
 lint-go: tools
-	$(RUN) sh -ec 'files=$$(gofmt -l client cmd internal tools); if test -n "$$files"; then printf "%s\n" "$$files"; exit 1; fi'
+	$(RUN) sh -ec 'files=$$(gofmt -l agentcontract client cmd internal tools); if test -n "$$files"; then printf "%s\n" "$$files"; exit 1; fi'
 	$(RUN) go vet ./...
 	$(RUN) golangci-lint run --build-tags integration ./...
 	$(RUN) golangci-lint run --build-tags live ./...

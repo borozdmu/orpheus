@@ -175,3 +175,6 @@ directory. Use `migrate --dir /path/to/migrations up` or
 | `make build` | Compile the application inside the tools container |
 | `make docker-build` / `make smoke` | Build images / verify production serve, worker, migrate and shutdown |
 | `make check` | Check generation, module tidiness, Go fixes, lint, dead code, SQL, tests, race, vulnerabilities and compilation |
+
+For the transport-independent corporate assignment, repeated current-audience
+checks and durable token revocation, see [corporate agent access](docs/corporate-agents.md).
