@@ -49,7 +49,12 @@ func (p Profiles) EnvironmentAllowlist(explicit []string) []string {
 	}
 	for _, service := range p.Services {
 		if service.Provider != nil {
-			names = slices.DeleteFunc(names, func(name string) bool { return name == service.Provider.SecretEnv })
+			for _, connector := range service.Provider.AudienceConnectors {
+				names = slices.DeleteFunc(names, func(name string) bool { return name == connector.SecretEnv })
+			}
+			names = slices.DeleteFunc(names, func(name string) bool {
+				return name == service.Provider.SecretEnv || name == service.Provider.AudienceSecretEnv
+			})
 		}
 	}
 	slices.Sort(names)

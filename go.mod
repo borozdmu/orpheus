@@ -24,6 +24,7 @@ require (
 	github.com/prometheus/client_golang v1.24.1
 	github.com/russellhaering/goxmldsig v1.6.1
 	golang.org/x/net v0.62.0
+	gopkg.in/yaml.v3 v3.0.1
 )
 
 require (
@@ -78,5 +79,4 @@ require (
 	golang.org/x/text v0.43.0 // indirect
 	golang.org/x/tools v0.51.0 // indirect
 	google.golang.org/protobuf v1.36.12 // indirect
-	gopkg.in/yaml.v3 v3.0.1 // indirect
 )

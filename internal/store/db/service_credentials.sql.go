@@ -8,12 +8,14 @@ package db
 import (
 	"context"
 	"encoding/json"
+	"time"
 
 	"github.com/google/uuid"
+	"github.com/orpheus-agents/orpheus/internal/session"
 )
 
 const getServiceCredentials = `-- name: GetServiceCredentials :one
-SELECT run_id, invocation_id, access_context, scopes, ciphertext FROM run_service_credentials WHERE run_id = $1
+SELECT run_id, invocation_id, access_context, scopes, ciphertext, revoked_at FROM run_service_credentials WHERE run_id = $1
 `
 
 func (q *Queries) GetServiceCredentials(ctx context.Context, runID uuid.UUID) (RunServiceCredential, error) {
@@ -25,6 +27,7 @@ func (q *Queries) GetServiceCredentials(ctx context.Context, runID uuid.UUID) (R
 		&i.AccessContext,
 		&i.Scopes,
 		&i.Ciphertext,
+		&i.RevokedAt,
 	)
 	return i, err
 }
@@ -76,6 +79,73 @@ func (q *Queries) InvocationAccepted(ctx context.Context, invocationID uuid.UUID
 	var exists bool
 	err := row.Scan(&exists)
 	return exists, err
+}
+
+const invocationRun = `-- name: InvocationRun :one
+SELECT r.session_id, r.id, r.status, r.cancel_requested_at
+FROM runs r JOIN run_service_credentials c ON c.run_id=r.id
+WHERE c.invocation_id=$1 AND c.revoked_at IS NULL
+`
+
+type InvocationRunRow struct {
+	SessionID         uuid.UUID      `json:"session_id"`
+	ID                uuid.UUID      `json:"id"`
+	Status            session.Status `json:"status"`
+	CancelRequestedAt *time.Time     `json:"cancel_requested_at"`
+}
+
+func (q *Queries) InvocationRun(ctx context.Context, invocationID uuid.UUID) (InvocationRunRow, error) {
+	row := q.db.QueryRow(ctx, invocationRun, invocationID)
+	var i InvocationRunRow
+	err := row.Scan(
+		&i.SessionID,
+		&i.ID,
+		&i.Status,
+		&i.CancelRequestedAt,
+	)
+	return i, err
+}
+
+const markCredentialsRevoked = `-- name: MarkCredentialsRevoked :exec
+UPDATE run_service_credentials SET revoked_at=now() WHERE run_id=$1
+`
+
+func (q *Queries) MarkCredentialsRevoked(ctx context.Context, runID uuid.UUID) error {
+	_, err := q.db.Exec(ctx, markCredentialsRevoked, runID)
+	return err
+}
+
+const pendingCredentialRevocations = `-- name: PendingCredentialRevocations :many
+SELECT r.session_id, c.run_id FROM run_service_credentials c
+JOIN runs r ON r.id=c.run_id
+WHERE c.revoked_at IS NULL
+AND (r.status IN ('completed','failed','cancelled') OR r.cancel_requested_at IS NOT NULL)
+ORDER BY r.created_at, c.run_id LIMIT 100
+`
+
+type PendingCredentialRevocationsRow struct {
+	SessionID uuid.UUID `json:"session_id"`
+	RunID     uuid.UUID `json:"run_id"`
+}
+
+func (q *Queries) PendingCredentialRevocations(ctx context.Context) ([]PendingCredentialRevocationsRow, error) {
+	rows, err := q.db.Query(ctx, pendingCredentialRevocations)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []PendingCredentialRevocationsRow{}
+	for rows.Next() {
+		var i PendingCredentialRevocationsRow
+		if err := rows.Scan(&i.SessionID, &i.RunID); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const updateServiceCredentials = `-- name: UpdateServiceCredentials :exec

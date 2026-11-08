@@ -585,6 +585,18 @@ func run(ctx context.Context, s *store.Store, platform harness.Platform, cleanup
 	defer func() { cancel(); wg.Wait(); collector.Wait() }()
 	// Purge expired identities even after SAML is disabled, under worker ownership.
 	wg.Go(func() { cleanup(execution, db.New(s.Pool)) })
+	wg.Go(func() {
+		for execution.Err() == nil {
+			if err := s.RevokeTerminalCredentials(execution); err != nil && execution.Err() == nil {
+				slog.WarnContext(execution, "Credential cleanup incomplete", "error_type", diagnostic.Describe(err))
+			}
+			select {
+			case <-execution.Done():
+				return
+			case <-time.After(15 * time.Second):
+			}
+		}
+	})
 	tasks := map[uuid.UUID]workerTask{}
 	var retention sandboxCleanupPass
 	for ctx.Err() == nil {

@@ -149,6 +149,7 @@ type RunServiceCredential struct {
 	AccessContext json.RawMessage `json:"access_context"`
 	Scopes        json.RawMessage `json:"scopes"`
 	Ciphertext    string          `json:"ciphertext"`
+	RevokedAt     *time.Time      `json:"revoked_at"`
 }
 
 type Session struct {

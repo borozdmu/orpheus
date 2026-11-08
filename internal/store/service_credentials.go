@@ -114,7 +114,7 @@ func (s *Store) checkCredentials(ctx context.Context, tx pgx.Tx, record SessionR
 	compatibleProvider := true
 	for code, previous := range old.Entries {
 		next, ok := state.Entries[code]
-		if !ok || previous.Config.Endpoint != next.Config.Endpoint || previous.Config.SecretEnv != next.Config.SecretEnv || previous.Config.TokenFile != next.Config.TokenFile || !slices.Equal(slices.Sorted(slices.Values(previous.Config.ContextFields)), slices.Sorted(slices.Values(next.Config.ContextFields))) {
+		if !ok || !maps.Equal(previous.Config.AudienceConnectors, next.Config.AudienceConnectors) || previous.Config.Protocol != next.Config.Protocol || previous.Config.AudienceEndpoint != next.Config.AudienceEndpoint || previous.Config.AudienceSecretEnv != next.Config.AudienceSecretEnv || previous.Config.Endpoint != next.Config.Endpoint || previous.Config.SecretEnv != next.Config.SecretEnv || previous.Config.TokenFile != next.Config.TokenFile || !slices.Equal(slices.Sorted(slices.Values(previous.Config.ContextFields)), slices.Sorted(slices.Values(next.Config.ContextFields))) {
 			compatibleProvider = false
 		}
 	}
@@ -184,4 +184,67 @@ func (s *Store) SaveServiceCredentials(ctx context.Context, sid, rid uuid.UUID, 
 		}
 		return db.New(tx).UpdateServiceCredentials(ctx, db.UpdateServiceCredentialsParams{RunID: rid, Ciphertext: *token})
 	})
+}
+
+// RevokeTerminalCredentials is a durable cleanup pass, independent of sandbox
+// deletion/pause or the next run. Lost replies retry the same revoke request.
+func (s *Store) RevokeTerminalCredentials(ctx context.Context) error {
+	rows, err := db.New(s.Pool).PendingCredentialRevocations(ctx)
+	if err != nil {
+		return err
+	}
+	var failures []error
+	for _, row := range rows {
+		state, err := s.ServiceCredentials(ctx, row.SessionID, row.RunID)
+		if err != nil {
+			failures = append(failures, err)
+			continue
+		}
+		var revokeErr error
+		for code, entry := range state.Entries {
+			call, cancel := context.WithTimeout(ctx, 5*time.Second)
+			err := s.CredentialClient.Revoke(call, entry.Config, code, state.Context.InvocationID, entry.Grant)
+			cancel()
+			revokeErr = errors.Join(revokeErr, err)
+		}
+		if revokeErr != nil {
+			failures = append(failures, revokeErr)
+			continue
+		}
+		failures = append(failures, db.New(s.Pool).MarkCredentialsRevoked(ctx, row.RunID))
+	}
+	return errors.Join(failures...)
+}
+
+// ConfirmInvocation is server-to-server only. It uses persisted authority and
+// trusted connector endpoints; the caller cannot choose readers or delivery.
+func (s *Store) ConfirmInvocation(ctx context.Context, invocation uuid.UUID) error {
+	denied := session.Problem(403, "audience_unconfirmed", "Current run audience could not be confirmed.")
+	row, err := db.New(s.Pool).InvocationRun(ctx, invocation)
+	if err != nil || row.CancelRequestedAt != nil || row.Status == "completed" || row.Status == "failed" || row.Status == "cancelled" {
+		return denied
+	}
+	state, err := s.ServiceCredentials(ctx, row.SessionID, row.ID)
+	if err != nil || state.Expired(time.Now()) || state.Context.InvocationID != invocation {
+		return denied
+	}
+	confirmed := false
+	for _, entry := range state.Entries {
+		if entry.Config.Protocol == "" {
+			continue
+		}
+		if err = s.CredentialClient.Confirm(ctx, entry.Config, state.Context); err != nil {
+			_, _ = s.Cancel(ctx, row.SessionID, row.ID)
+			return denied
+		}
+		confirmed = true
+	}
+	if !confirmed {
+		return denied
+	}
+	current, err := db.New(s.Pool).InvocationRun(ctx, invocation)
+	if err != nil || current.CancelRequestedAt != nil || current.Status == "completed" || current.Status == "failed" || current.Status == "cancelled" {
+		return denied
+	}
+	return nil
 }

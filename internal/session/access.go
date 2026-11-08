@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/orpheus-agents/orpheus/agentcontract"
 )
 
 // AccessSubject identifies a human or service principal in a caller's namespace.
@@ -20,6 +21,7 @@ type AccessSubject struct {
 type AccessScopeContext = map[string]json.RawMessage
 
 type AccessContext struct {
+	Assignment           *json.RawMessage   `json:"assignment,omitzero"`
 	InvocationID         uuid.UUID          `json:"invocation_id"`
 	Subject              AccessSubject      `json:"subject"`
 	ScopeContext         AccessScopeContext `json:"scope_context"`
@@ -43,6 +45,12 @@ func (a *AccessContext) Validate() error {
 	scope, err := json.Marshal(a.ScopeContext)
 	if err != nil || len(scope) > 1<<20 {
 		return Problem(422, "invalid_access_context", "Scope context must be a JSON object of at most 1 MiB.")
+	}
+	if a.Assignment != nil {
+		task, err := agentcontract.Decode(*a.Assignment)
+		if err != nil || task.InvocationID != a.InvocationID || task.Author.Namespace != a.Subject.Namespace || task.Author.ID != a.Subject.ID {
+			return Problem(422, "invalid_assignment", "Assignment authority differs from the run.")
+		}
 	}
 	seen := map[AccessSubject]bool{}
 	for _, subject := range a.AllowedInputSubjects {

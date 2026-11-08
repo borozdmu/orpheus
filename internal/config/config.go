@@ -358,7 +358,14 @@ func Resolve(in session.ConfigurationInput, p Profiles, allowlist []string, defa
 		return out, invalid("Invalid session token budget.", "configuration", "limits", "max_session_tokens")
 	}
 	for _, service := range p.Services {
-		if service.Provider != nil && service.Provider.SecretEnv == profile.Auth.APIKeyEnv {
+		if service.Provider != nil {
+			for _, connector := range service.Provider.AudienceConnectors {
+				if connector.SecretEnv == profile.Auth.APIKeyEnv {
+					return out, invalid("Connector server secret cannot be used as model credentials.", "configuration", "agent", "profile")
+				}
+			}
+		}
+		if service.Provider != nil && (service.Provider.SecretEnv == profile.Auth.APIKeyEnv || service.Provider.AudienceSecretEnv == profile.Auth.APIKeyEnv) {
 			return out, invalid("Provider server secret cannot be used as model credentials.", "configuration", "agent", "profile")
 		}
 	}

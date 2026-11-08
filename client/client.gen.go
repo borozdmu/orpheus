@@ -984,9 +984,12 @@ type Accepted struct {
 // AccessContext Trusted caller snapshot for a new invocation. Never inferred from prompts or message metadata. Protected service scope changes return 409 service_scope_changed before execution.
 type AccessContext struct {
 	// AllowedInputSubjects Frozen explicit allowlist for SendMessage during this run. Absent or empty denies interactive inputs. The initiating subject need not be listed. Never forwarded to credentials providers.
-	AllowedInputSubjects *[]AccessSubject   `json:"allowed_input_subjects,omitempty"`
-	ContextObservedAt    time.Time          `json:"context_observed_at"`
-	InvocationID         openapi_types.UUID `json:"invocation_id"`
+	AllowedInputSubjects *[]AccessSubject `json:"allowed_input_subjects,omitempty"`
+
+	// Assignment Signed transport-independent corporate assignment, checked through the server-configured connector.
+	Assignment        *json.RawMessage   `json:"assignment,omitempty"`
+	ContextObservedAt time.Time          `json:"context_observed_at"`
+	InvocationID      openapi_types.UUID `json:"invocation_id"`
 
 	// ScopeContext Opaque JSON object interpreted only by the selected credentials provider. Its serialized JSON must not exceed 1 MiB. Orpheus does not derive input permissions from this object.
 	ScopeContext AccessScopeContext `json:"scope_context"`
@@ -1767,6 +1770,11 @@ type Usage struct {
 	TotalTokens           int64 `json:"total_tokens"`
 }
 
+// ConfirmAgentAccessJSONBody defines parameters for ConfirmAgentAccess.
+type ConfirmAgentAccessJSONBody struct {
+	InvocationID openapi_types.UUID `json:"invocation_id"`
+}
+
 // GetAnalyticsOverviewParams defines parameters for GetAnalyticsOverview.
 type GetAnalyticsOverviewParams struct {
 	// Window Server-relative sliding window. Defaults to 24h; cannot be combined with from/to.
@@ -1889,6 +1897,9 @@ type SendMessageParams struct {
 type BrowserLoginParams struct {
 	Next *string `form:"next,omitempty" json:"next,omitempty"`
 }
+
+// ConfirmAgentAccessJSONRequestBody defines body for ConfirmAgentAccess for application/json ContentType.
+type ConfirmAgentAccessJSONRequestBody ConfirmAgentAccessJSONBody
 
 // CreateSessionJSONRequestBody defines body for CreateSession for application/json ContentType.
 type CreateSessionJSONRequestBody = CreateSession
@@ -2515,6 +2526,20 @@ type ClientInterface interface {
 	// Corresponds with GET /api/v1/accounts/limits (the `GetAccountLimits` operationId).
 	GetAccountLimits(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
 
+	// ConfirmAgentAccessWithBody Reconfirm a corporate invocation before a sensitive service operation
+	//
+	// Takes any type of body and a specified content type.
+	//
+	// Corresponds with POST /api/v1/agent-access/confirm (the `ConfirmAgentAccess` operationId).
+	ConfirmAgentAccessWithBody(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// ConfirmAgentAccess Reconfirm a corporate invocation before a sensitive service operation
+	//
+	// Takes a body of the `application/json` content type.
+	//
+	// Corresponds with POST /api/v1/agent-access/confirm (the `ConfirmAgentAccess` operationId).
+	ConfirmAgentAccess(ctx context.Context, body ConfirmAgentAccessJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
 	// GetAnalyticsOverview Dashboard analytics snapshot
 	//
 	// Counts and usage of runs accepted during [from,to), the same totals per namespace, plus current active sessions. All timestamps are UTC.
@@ -2675,6 +2700,40 @@ type ClientInterface interface {
 // Corresponds with GET /api/v1/accounts/limits (the `GetAccountLimits` operationId).
 func (c *Client) GetAccountLimits(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewGetAccountLimitsRequest(c.Server)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// ConfirmAgentAccessWithBody Reconfirm a corporate invocation before a sensitive service operation
+//
+// Takes any type of body and a specified content type.
+//
+// Corresponds with POST /api/v1/agent-access/confirm (the `ConfirmAgentAccess` operationId).
+func (c *Client) ConfirmAgentAccessWithBody(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewConfirmAgentAccessRequestWithBody(c.Server, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// ConfirmAgentAccess Reconfirm a corporate invocation before a sensitive service operation
+//
+// Takes a body of the `application/json` content type.
+//
+// Corresponds with POST /api/v1/agent-access/confirm (the `ConfirmAgentAccess` operationId).
+func (c *Client) ConfirmAgentAccess(ctx context.Context, body ConfirmAgentAccessJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewConfirmAgentAccessRequest(c.Server, body)
 	if err != nil {
 		return nil, err
 	}
@@ -3100,6 +3159,46 @@ func NewGetAccountLimitsRequest(server string) (*http.Request, error) {
 	if err != nil {
 		return nil, err
 	}
+
+	return req, nil
+}
+
+// NewConfirmAgentAccessRequest calls the generic ConfirmAgentAccess builder with application/json body
+func NewConfirmAgentAccessRequest(server string, body ConfirmAgentAccessJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewConfirmAgentAccessRequestWithBody(server, "application/json", bodyReader)
+}
+
+// NewConfirmAgentAccessRequestWithBody constructs an http.Request for the ConfirmAgentAccess method, with any body, and a specified content type
+func NewConfirmAgentAccessRequestWithBody(server string, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/v1/agent-access/confirm")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodPost, queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
 
 	return req, nil
 }
@@ -4459,6 +4558,20 @@ type ClientWithResponsesInterface interface {
 	// Corresponds with GET /api/v1/accounts/limits (the `GetAccountLimits` operationId).
 	GetAccountLimitsWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*GetAccountLimitsHTTPResponse, error)
 
+	// ConfirmAgentAccessWithBodyWithResponse Reconfirm a corporate invocation before a sensitive service operation
+	//
+	// Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with POST /api/v1/agent-access/confirm (the `ConfirmAgentAccess` operationId).
+	ConfirmAgentAccessWithBodyWithResponse(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*ConfirmAgentAccessHTTPResponse, error)
+
+	// ConfirmAgentAccessWithResponse Reconfirm a corporate invocation before a sensitive service operation
+	//
+	// Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with POST /api/v1/agent-access/confirm (the `ConfirmAgentAccess` operationId).
+	ConfirmAgentAccessWithResponse(ctx context.Context, body ConfirmAgentAccessJSONRequestBody, reqEditors ...RequestEditorFn) (*ConfirmAgentAccessHTTPResponse, error)
+
 	// GetAnalyticsOverviewWithResponse Dashboard analytics snapshot
 	//
 	// Counts and usage of runs accepted during [from,to), the same totals per namespace, plus current active sessions. All timestamps are UTC.
@@ -4697,6 +4810,58 @@ func (r GetAccountLimitsHTTPResponse) StatusCode() int {
 
 // ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
 func (r GetAccountLimitsHTTPResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+type ConfirmAgentAccessHTTPResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	// JSON200 the response for an HTTP 200 `application/json` response
+	JSON200 *struct {
+		Invocation openapi_types.UUID `json:"invocation"`
+	}
+	// JSONDefault the response for an HTTP default `application/json` response
+	JSONDefault *ErrorResponse
+}
+
+// GetJSON200 returns the response for an HTTP 200 `application/json` response
+func (r ConfirmAgentAccessHTTPResponse) GetJSON200() *struct {
+	Invocation openapi_types.UUID `json:"invocation"`
+} {
+	return r.JSON200
+}
+
+// GetJSONDefault returns the response for an HTTP default `application/json` response
+func (r ConfirmAgentAccessHTTPResponse) GetJSONDefault() *ErrorResponse {
+	return r.JSONDefault
+}
+
+// GetBody returns the raw response body bytes
+func (r ConfirmAgentAccessHTTPResponse) GetBody() []byte {
+	return r.Body
+}
+
+// Status returns HTTPResponse.Status
+func (r ConfirmAgentAccessHTTPResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r ConfirmAgentAccessHTTPResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r ConfirmAgentAccessHTTPResponse) ContentType() string {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.Header.Get("Content-Type")
 	}
@@ -6384,6 +6549,32 @@ func (c *ClientWithResponses) GetAccountLimitsWithResponse(ctx context.Context, 
 	return ParseGetAccountLimitsHTTPResponse(rsp)
 }
 
+// ConfirmAgentAccessWithBodyWithResponse Reconfirm a corporate invocation before a sensitive service operation
+//
+// Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
+//
+// Corresponds with POST /api/v1/agent-access/confirm (the `ConfirmAgentAccess` operationId).
+func (c *ClientWithResponses) ConfirmAgentAccessWithBodyWithResponse(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*ConfirmAgentAccessHTTPResponse, error) {
+	rsp, err := c.ConfirmAgentAccessWithBody(ctx, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseConfirmAgentAccessHTTPResponse(rsp)
+}
+
+// ConfirmAgentAccessWithResponse Reconfirm a corporate invocation before a sensitive service operation
+//
+// Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
+//
+// Corresponds with POST /api/v1/agent-access/confirm (the `ConfirmAgentAccess` operationId).
+func (c *ClientWithResponses) ConfirmAgentAccessWithResponse(ctx context.Context, body ConfirmAgentAccessJSONRequestBody, reqEditors ...RequestEditorFn) (*ConfirmAgentAccessHTTPResponse, error) {
+	rsp, err := c.ConfirmAgentAccess(ctx, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseConfirmAgentAccessHTTPResponse(rsp)
+}
+
 // GetAnalyticsOverviewWithResponse Dashboard analytics snapshot
 //
 // Counts and usage of runs accepted during [from,to), the same totals per namespace, plus current active sessions. All timestamps are UTC.
@@ -6750,6 +6941,41 @@ func ParseGetAccountLimitsHTTPResponse(rsp *http.Response) (*GetAccountLimitsHTT
 			return nil, err
 		}
 		response.JSON503 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseConfirmAgentAccessHTTPResponse parses an HTTP response from a ConfirmAgentAccessWithResponse call
+func ParseConfirmAgentAccessHTTPResponse(rsp *http.Response) (*ConfirmAgentAccessHTTPResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &ConfirmAgentAccessHTTPResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest struct {
+			Invocation openapi_types.UUID `json:"invocation"`
+		}
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && true:
+		var dest ErrorResponse
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSONDefault = &dest
 
 	}
 
