@@ -169,8 +169,9 @@ directory. Use `migrate --dir /path/to/migrations up` or
 | `make test` | Unit, reader, PostgreSQL, S3 and migration tests |
 | `make test-go-race` | Unit and integration tests with the race detector |
 | `make test-saml` | Signed SAML round trip through the production HTTP handler and isolated Keycloak; no UI required |
-| `make test-live` | Run real AgentBox/Codex, lost-response recovery, reconnect and account-file checks; also run by CI on branches and eligible pull requests |
-| `make vuln` | govulncheck and Trivy vulnerability/configuration scans |
+| `make test-live` | Run real AgentBox/Codex, lost-response recovery, reconnect and account-file checks; CI runs these when both API-key secrets are configured |
+| `make vuln` | govulncheck policy and Trivy scans; see [security checks](docs/security-checks.md) for the temporary reviewed SAML exception |
+| `make vuln-raw` | Run govulncheck without the reviewed false-positive policy |
 | `make build` | Compile the application inside the tools container |
 | `make docker-build` / `make smoke` | Build images / verify production serve, worker, migrate and shutdown |
 | `make check` | Check generation, module tidiness, Go fixes, lint, dead code, SQL, tests, race, vulnerabilities and compilation |

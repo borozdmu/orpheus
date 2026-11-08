@@ -23,6 +23,12 @@ jobs:
         run: make check
       - name: Build and smoke-test production image
         run: make smoke
+      - name: Preserve the complete security scanner report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: govulncheck-report
+          path: govulncheck.json
       - name: Stop test services
         if: always()
         run: make stop
@@ -78,12 +84,31 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha,scope=release-image
           cache-to: type=gha,mode=max,scope=release-image
-  live:
+  live-configuration:
     if: >-
       github.ref_type != 'tag' &&
       github.actor != 'dependabot[bot]' &&
       (github.event_name != 'pull_request' ||
        github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on: ubuntu-24.04
+    outputs:
+      ready: ${{ steps.credentials.outputs.ready }}
+    steps:
+      - name: Check whether external test credentials are configured
+        id: credentials
+        env:
+          AGENTBOX_API_KEY: ${{ secrets.AGENTBOX_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          if [ -n "$AGENTBOX_API_KEY" ] && [ -n "$OPENAI_API_KEY" ]; then
+            echo 'ready=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'ready=false' >> "$GITHUB_OUTPUT"
+            echo 'Live tests were not run: configure AGENTBOX_API_KEY and OPENAI_API_KEY repository secrets. Unit, integration, race, security and smoke checks remain required.' >> "$GITHUB_STEP_SUMMARY"
+          fi
+  live:
+    needs: live-configuration
+    if: needs.live-configuration.outputs.ready == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
