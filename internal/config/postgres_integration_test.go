@@ -20,7 +20,9 @@ func TestDatabaseCallTimeouts(t *testing.T) {
 		t.Fatal(err)
 	}
 	cfg.MaxConns = 1
-	cfg.ConnConfig.Tracer = &databaseTimeoutTracer{timeout: 50 * time.Millisecond}
+	// Allow a cold connection on a busy test host while keeping the deadline
+	// well below both the five-second query and the one-second assertion.
+	cfg.ConnConfig.Tracer = &databaseTimeoutTracer{timeout: 250 * time.Millisecond}
 	pool, err := pgxpool.NewWithConfig(t.Context(), cfg)
 	if err != nil {
 		t.Fatal(err)

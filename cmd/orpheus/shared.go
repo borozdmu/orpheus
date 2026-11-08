@@ -60,7 +60,7 @@ func loadTenant(dir string) (tenantSettings, error) {
 	if err != nil {
 		return tenant, err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	info, err := f.Stat()
 	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0077 != 0 || info.Size() > 1<<20 {
 		return tenant, errors.New("invalid permissions or size for tenant settings")

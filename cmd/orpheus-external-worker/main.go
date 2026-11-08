@@ -29,8 +29,10 @@ func main() {
 		return
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, os.Interrupt)
-	defer stop()
-	if err := run(ctx); err != nil && ctx.Err() == nil {
+	err := run(ctx)
+	interrupted := ctx.Err() != nil
+	stop()
+	if err != nil && !interrupted {
 		slog.Error("External worker stopped", "type", fmt.Sprintf("%T", err))
 		os.Exit(1)
 	}
@@ -54,7 +56,7 @@ func run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	defer owner.Close(context.Background())
+	defer func() { _ = owner.Close(context.Background()) }()
 	ok, err := store.TryWorkerLock(ctx, owner)
 	if err != nil {
 		return err
@@ -101,7 +103,7 @@ func run(ctx context.Context) error {
 		// Probe the private listener without reading payloads or creating work.
 		connection, socketErr := net.DialTimeout("unix", socket, time.Second)
 		if socketErr == nil {
-			connection.Close()
+			_ = connection.Close()
 			if err := os.WriteFile(heartbeat, nil, 0600); err != nil {
 				return err
 			}

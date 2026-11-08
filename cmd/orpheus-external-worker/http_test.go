@@ -52,7 +52,7 @@ func TestReferenceRoundTripThroughOrpheusHTTP(t *testing.T) {
 		t.Fatal("ambiguous durable session identity")
 	}
 	setBackend(&q, func(w http.ResponseWriter, _ *http.Request) {
-		json.NewEncoder(w).Encode(receipt{ID: id, State: "done", Usage: &counters{new(int64(1)), new(int64(2)), new(int64(0)), nil}})
+		_ = json.NewEncoder(w).Encode(receipt{ID: id, State: "done", Usage: &counters{new(int64(1)), new(int64(2)), new(int64(0)), nil}})
 	})
 	if err := q.tick(t.Context(), accepted.SessionID); err != nil {
 		t.Fatal(err)

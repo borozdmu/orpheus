@@ -55,7 +55,7 @@ func (q queue) plan(ctx context.Context, id uuid.UUID) (assignment, error) {
 		if !allowed(q.workflow, r, run) {
 			return finish(ctx, tx, r, run, session.Failed, "invalid_external_assignment")
 		}
-		a = assignment{id: *r.ExternalKey, binding: binding{Fingerprint: *run.InputFingerprint, Run: run.ID, Session: id}}
+		a = assignment{id: *r.ExternalKey, Fingerprint: *run.InputFingerprint, Run: run.ID, Session: id}
 		if run.Status == session.Accepted {
 			msgs, err := store.Messages(ctx, tx, run.ID)
 			if err != nil {
@@ -153,10 +153,9 @@ func (q queue) tick(ctx context.Context, id uuid.UUID) error {
 			// A provider receipt wins a race against a later cancellation.
 			// Both sides keep the full private result in CX. Only a reference
 			// and metered counters enter the Orpheus session history.
-			message := store.MessageRecord{Message: session.Message{
+			message := store.MessageRecord{
 				ID: uuid.New(), SessionID: id, RunID: a.Run, Role: "assistant",
-				Kind: new("answer"), Text: a.id,
-			}}
+				Kind: new("answer"), Text: a.id}
 			if err := store.PublishMessage(ctx, tx, r, &message); err != nil {
 				return err
 			}

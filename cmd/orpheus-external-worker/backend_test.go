@@ -14,7 +14,7 @@ import (
 
 func TestClosedUnixHandoff(t *testing.T) {
 	id := strings.Repeat("e", 64)
-	a := assignment{id: id, binding: binding{Fingerprint: strings.Repeat("0", 64), Run: uuid.New(), Session: uuid.New()}, action: "cancel"}
+	a := assignment{id: id, Fingerprint: strings.Repeat("0", 64), Run: uuid.New(), Session: uuid.New(), action: "cancel"}
 	socket := filepath.Join(t.TempDir(), "exec.sock")
 	listener, err := net.Listen("unix", socket)
 	if err != nil {
@@ -29,10 +29,10 @@ func TestClosedUnixHandoff(t *testing.T) {
 			t.Error("incorrect cancel binding")
 		}
 		w.WriteHeader(409)
-		w.Write([]byte(`{"error":"job_binding_conflict"}`))
+		_, _ = w.Write([]byte(`{"error":"job_binding_conflict"}`))
 	})}
-	go srv.Serve(listener)
-	t.Cleanup(func() { srv.Shutdown(context.Background()) })
+	go func() { _ = srv.Serve(listener) }()
+	t.Cleanup(func() { _ = srv.Shutdown(context.Background()) })
 	result, err := unixBackend(socket).exchange(t.Context(), a)
 	if err != nil || result.State != "rejected" {
 		t.Fatal(result, err)

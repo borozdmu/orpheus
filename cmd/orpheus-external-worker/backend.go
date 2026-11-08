@@ -33,7 +33,7 @@ func readWorkflow(path string) (workflow, error) {
 	if err != nil {
 		return w, err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	decoder := json.NewDecoder(f)
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&w); err != nil {
@@ -128,7 +128,7 @@ func (b backend) exchange(ctx context.Context, a assignment) (receipt, error) {
 	if err != nil {
 		return receipt{}, err
 	}
-	defer res.Body.Close()
+	defer func() { _ = res.Body.Close() }()
 	raw, err := io.ReadAll(io.LimitReader(res.Body, 8193))
 	if err != nil || len(raw) > 8192 {
 		return receipt{}, errors.New("invalid backend reply")

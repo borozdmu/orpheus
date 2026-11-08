@@ -80,13 +80,13 @@ func TestPaidAdmissionReplayAndRecovery(t *testing.T) {
 			if b != intent || intent.Run != first.RunID || intent.Session != first.SessionID {
 				t.Fatalf("dispatch rebound: %+v", b)
 			}
-			json.NewEncoder(w).Encode(receipt{ID: id, State: "running"})
+			_ = json.NewEncoder(w).Encode(receipt{ID: id, State: "running"})
 			return
 		}
 		if r.Header.Get("X-CX-Fingerprint") != intent.Fingerprint || r.Header.Get("X-CX-Run-ID") != first.RunID.String() {
 			t.Fatal("lost binding")
 		}
-		json.NewEncoder(w).Encode(receipt{ID: id, State: "done", Usage: &counters{new(int64(20)), new(int64(7)), new(int64(9)), new(int64(4))}})
+		_ = json.NewEncoder(w).Encode(receipt{ID: id, State: "done", Usage: &counters{new(int64(20)), new(int64(7)), new(int64(9)), new(int64(4))}})
 	})
 	if err := q.tick(ctx, first.SessionID); err == nil {
 		t.Fatal("missing lost response")
@@ -130,7 +130,7 @@ func TestCancellationBeforeAndAfterDispatch(t *testing.T) {
 			if strings.HasSuffix(r.URL.Path, "/cancel") {
 				state = "cancelled"
 			}
-			json.NewEncoder(w).Encode(receipt{ID: *req.Create.ExternalKey, State: state})
+			_ = json.NewEncoder(w).Encode(receipt{ID: *req.Create.ExternalKey, State: state})
 		})
 		if !before {
 			if err := q.tick(ctx, a.SessionID); err != nil {
@@ -174,7 +174,7 @@ func TestRejectsWrongWorkflowAndHoldsUnknown(t *testing.T) {
 	var methods []string
 	setBackend(&q, func(w http.ResponseWriter, r *http.Request) {
 		methods = append(methods, r.Method)
-		io.WriteString(w, `{"state":"unknown","id":"`+*req.Create.ExternalKey+`"}`)
+		_, _ = io.WriteString(w, `{"state":"unknown","id":"`+*req.Create.ExternalKey+`"}`)
 	})
 	for range 2 {
 		if err := q.tick(ctx, a.SessionID); err != nil {
