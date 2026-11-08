@@ -14,6 +14,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/orpheus-agents/orpheus/agentcontract"
 	"github.com/orpheus-agents/orpheus/internal/config"
 	"github.com/orpheus-agents/orpheus/internal/servicecredentials"
 	"github.com/orpheus-agents/orpheus/internal/session"
@@ -285,4 +286,35 @@ func TestProtectedProviderProjectionCompatibility(t *testing.T) {
 	admission.Key = uuid.New()
 	_, err = s.Accept(t.Context(), admission)
 	requireCode(t, err, "service_scope_changed")
+}
+
+func TestCorporateClarificationCannotBorrowOriginalAuthorsGrant(t *testing.T) {
+	s, req, _, _, _ := protectedFixture(t)
+	a := req.Create.AccessContext
+	author := agentcontract.Principal{Namespace: a.Subject.Namespace, ID: a.Subject.ID, PrincipalID: "1"}
+	reader := session.AccessSubject{Namespace: "users", ID: "bob"}
+	a.AllowedInputSubjects = []session.AccessSubject{a.Subject, reader}
+	task := agentcontract.Assignment{Schema: agentcontract.Version, InvocationID: a.InvocationID, Agent: "mark", Author: author, Readers: []agentcontract.Principal{author, {Namespace: reader.Namespace, ID: reader.ID, PrincipalID: "2"}}, Audience: agentcontract.Audience{Kind: "exact", Instance: "synthetic", ChannelID: "channel", ChannelType: "P", Complete: true}, Delivery: agentcontract.Route{Connector: "mattermost", Source: "synthetic", Chat: "channel", Message: "message"}, Confirmation: agentcontract.Confirmation{ObservedAt: a.ContextObservedAt}}
+	raw, _ := json.Marshal(task)
+	a.Assignment = new(json.RawMessage(raw))
+	accepted, err := s.Accept(t.Context(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = s.Mutate(t.Context(), accepted.SessionID, false, func(tx pgx.Tx, r *SessionRecord) error {
+		run, err := GetRun(t.Context(), tx, accepted.SessionID, accepted.RunID)
+		if err != nil {
+			return err
+		}
+		run.Status = session.Running
+		return PublishRun(t.Context(), tx, r, &run)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	_, err = s.Accept(t.Context(), Admission{Key: uuid.New(), SessionID: accepted.SessionID, RunID: accepted.RunID, Messages: []session.TextMessage{{Text: "write using the first author's grant"}}, InputSubjects: []session.AccessSubject{reader}})
+	requireCode(t, err, "input_subject_denied")
+	_, err = s.Accept(t.Context(), Admission{Key: uuid.New(), SessionID: accepted.SessionID, RunID: accepted.RunID, Messages: []session.TextMessage{{Text: "clarify as the original author"}}, InputSubjects: []session.AccessSubject{a.Subject}})
+	if err != nil {
+		t.Fatal("original author was denied", err)
+	}
 }

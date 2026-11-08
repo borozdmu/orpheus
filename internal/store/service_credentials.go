@@ -79,6 +79,9 @@ func (s *Store) checkCredentials(ctx context.Context, tx pgx.Tx, record SessionR
 			return session.Problem(403, "service_credentials_expired", "Service credentials expired.")
 		}
 		for _, subject := range a.InputSubjects {
+			if saved.Context.Assignment != nil && subject != saved.Context.Subject {
+				return session.Problem(403, "input_subject_denied", "A different corporate author requires a new run and grant.")
+			}
 			if !saved.Context.Allows(subject) {
 				return session.Problem(403, "input_subject_denied", "Input author is not allowed for this run.")
 			}
