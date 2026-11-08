@@ -23,7 +23,7 @@ require (
 	github.com/pressly/goose/v3 v3.28.0
 	github.com/prometheus/client_golang v1.24.1
 	github.com/russellhaering/goxmldsig v1.6.1
-	golang.org/x/net v0.60.0
+	golang.org/x/net v0.62.0
 )
 
 require (
