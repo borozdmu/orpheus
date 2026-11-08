@@ -11,6 +11,7 @@
 auth.json
 
 *.log
+/govulncheck.json
 
 # Embedded reader and its tests
 __pycache__/
