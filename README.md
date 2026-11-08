@@ -44,10 +44,20 @@ For read-only browser access, see [browser authentication](docs/browser-auth.md)
 For the dashboard snapshot and session filters, see [dashboard analytics](docs/dashboard-analytics.md).
 For profile settings, template registration and catalog APIs, see
 [profiles and templates](docs/profiles-and-templates.md).
+For the experimental temporary service credentials provider, see
+[service credentials](docs/service-credentials.md).
 For provider quota snapshots by account, see [account limits](docs/account-limits.md).
 For database-backed Prometheus metrics on the internal system listener, see
 [service metrics](docs/service-metrics.md).
 Run `make stop` to stop the project; database data is preserved.
+
+Service credential issue and renewal allow up to 60 seconds for the provider's
+fresh access projection, bounded by the caller's earlier deadline. This does
+not extend credential lifetimes or retry an uncertain issuance.
+The worker also provides `run.json` beside each protected service's token, with
+the current run ID and the provider-confirmed absolute deadline. Tools can check
+the remaining time before starting a mutation and reserve time for readback.
+The metadata contains no token or access scope; cleanup removes it with the token.
 
 Run and hook deadlines are independent of the sandbox timeout. The worker creates
 and reconnects sandboxes with a five-minute lease and renews it once per minute
@@ -57,6 +67,30 @@ worker stops renewing, AgentBox auto-pauses the sandbox when the lease expires;
 after a run, Orpheus deletes a single-run sandbox or pauses a reusable one.
 The AgentBox plan's maximum uninterrupted sandbox lifetime still applies:
 lease renewal does not extend that limit.
+
+Paused reusable sandboxes expire after 14 days by default. See
+[sandbox retention](docs/sandbox-retention.md) for configuration, cleanup behavior
+and the continuation API contract.
+
+Initial sandbox creation and connection have a separate, persisted two-minute
+provisioning deadline. Set `SANDBOX_PROVISION_TIMEOUT_SECONDS` to change it for new
+attempts. Cancellation during this stage completes locally even if AgentBox is
+unreachable; an expired attempt fails with `sandbox_provision_timeout`.
+
+Orpheus never automatically repeats a Create with an unknown outcome. It searches
+using the original operation metadata with persisted backoff. A cancelled or
+expired attempt cannot start agent work: a late sandbox is deleted directly,
+including for reusable sessions. The session remains unavailable, with its
+capacity slot reserved until deletion is confirmed. An empty search is not proof
+of absence, so an unresolved resource can retain a slot indefinitely. Existing
+run results remain readable; `sandbox.error` reports pending cleanup or conflicts.
+
+On upgrade, old cancelling creations complete as cancelled and expired creations
+fail on the first local pass. After acquiring execution ownership, the worker
+restores unresolved reservations once more to cover writes made by the old worker
+during rollout. Legacy adopted environments keep their normal lifecycle. Do not
+roll back just the worker binary after new cleanup obligations have been recorded;
+migration Down is not a production rollback procedure.
 
 ## Go API client
 
@@ -100,6 +134,13 @@ sessions and runs, not existing snapshots. See the [service setup guide](https:/
 
 ## Development
 
+В отображаемой истории нулевой символ U+0000 заменяется на U+FFFD, поскольку
+PostgreSQL не принимает U+0000 в `text` и `jsonb`. Это относится к сообщениям,
+ошибкам и JSON входов и результатов инструментов. При совпадении ключей после
+замены объект отображается JSON-строкой с сохранением обоих значений. Команды
+и данные нативного агента не изменяются; такой вывод не блокирует сохранение
+и завершение запуска.
+
 The application, generators, linters and tests run in Docker; host Go and Python
 are not required.
 
@@ -128,7 +169,7 @@ directory. Use `migrate --dir /path/to/migrations up` or
 | `make test` | Unit, reader, PostgreSQL, S3 and migration tests |
 | `make test-go-race` | Unit and integration tests with the race detector |
 | `make test-saml` | Signed SAML round trip through the production HTTP handler and isolated Keycloak; no UI required |
-| `make test-live` | Manually run real AgentBox/Codex, lost-response recovery, reconnect and account-file checks; not run by CI |
+| `make test-live` | Run real AgentBox/Codex, lost-response recovery, reconnect and account-file checks; also run by CI on branches and eligible pull requests |
 | `make vuln` | govulncheck and Trivy vulnerability/configuration scans |
 | `make build` | Compile the application inside the tools container |
 | `make docker-build` / `make smoke` | Build images / verify production serve, worker, migrate and shutdown |

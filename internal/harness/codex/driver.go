@@ -361,7 +361,9 @@ func (d *Driver) snapshot(ctx context.Context, thread string, path *string, offs
 				case "output":
 					d.outputs[item.ID] = item.Output
 				case "order":
-					d.orders[item.ID] = item.StartedAtMS
+					if previous, exists := d.orders[item.ID]; !exists || item.StartedAtMS < previous {
+						d.orders[item.ID] = item.StartedAtMS
+					}
 				case "command":
 					d.commands[item.ID] = item.Argv
 				}
@@ -421,6 +423,9 @@ func (d *Driver) snapshot(ctx context.Context, thread string, path *string, offs
 				d.thread.Turns[index].Items = mergeItem(d.thread.Turns[index].Items, p.Item, n.Method == "item/completed")
 			}
 		}
+	}
+	if err := d.confirmInterruptions(ctx, path, notifications); err != nil {
+		return harness.Snapshot{}, err
 	}
 	// A durable completion must not be hidden by an item/started placeholder.
 	// Keep unfinished tools only when the journal has no completion for them.
@@ -519,6 +524,54 @@ func (d *Driver) snapshot(ctx context.Context, thread string, path *string, offs
 
 func terminalTurn(status string) bool {
 	return status == "completed" || status == "interrupted" || status == "failed"
+}
+
+// During startup thread/read can reconstruct an unfinished journal as
+// interrupted while the live turn is still active. Only a completion event or
+// the durable turn boundary confirms cancellation; otherwise keep observing.
+func (d *Driver) confirmInterruptions(ctx context.Context, path *string, notifications []notification) error {
+	confirmed := map[string]bool{}
+	for _, n := range notifications {
+		if n.Method != "turn/completed" {
+			continue
+		}
+		var p struct {
+			Turn NativeTurn `json:"turn"`
+		}
+		if json.Unmarshal(n.Params, &p) == nil && terminalTurn(p.Turn.Status) {
+			confirmed[p.Turn.ID] = true
+		}
+	}
+	var history *offlineHistory
+	for i := range d.thread.Turns {
+		turn := &d.thread.Turns[i]
+		if turn.Status != "interrupted" || confirmed[turn.ID] {
+			continue
+		}
+		if path == nil {
+			d.rpc.markDirty()
+			return harness.ErrUncertain
+		}
+		if history == nil {
+			history = &offlineHistory{}
+			if err := readNative(ctx, d.rpc.sandbox, "offline", *path, 0, d.limit, history); err != nil {
+				d.rpc.markDirty()
+				return err
+			}
+		}
+		index := slices.IndexFunc(history.Turns, func(t NativeTurn) bool { return t.ID == turn.ID })
+		if index < 0 {
+			d.rpc.markDirty()
+			return harness.ErrUncertain
+		}
+		durable := history.Turns[index]
+		turn.Status = durable.Status
+		turn.Error = durable.Error
+		if !terminalTurn(turn.Status) {
+			d.rpc.markDirty()
+		}
+	}
+	return nil
 }
 
 // Once full RPC history exceeds the transport bound, observe the durable JSONL

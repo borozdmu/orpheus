@@ -181,6 +181,25 @@ func TestSAMLInvalidAssertions(t *testing.T) {
 			e.FindElement(".//saml:Conditions").RemoveChild(e.FindElement(".//saml:AudienceRestriction"))
 		},
 		"issuer": func(e *etree.Element) { e.FindElement(".//saml:Assertion/saml:Issuer").SetText("wrong") },
+		"missing assertion issuer": func(e *etree.Element) {
+			assertion := e.FindElement(".//saml:Assertion")
+			assertion.RemoveChild(assertion.FindElement("saml:Issuer"))
+		},
+		"missing assertion subject": func(e *etree.Element) {
+			assertion := e.FindElement(".//saml:Assertion")
+			assertion.RemoveChild(assertion.FindElement("saml:Subject"))
+		},
+		"missing assertion conditions": func(e *etree.Element) {
+			assertion := e.FindElement(".//saml:Assertion")
+			assertion.RemoveChild(assertion.FindElement("saml:Conditions"))
+		},
+		"foreign namespace name id": func(e *etree.Element) {
+			subject := e.FindElement(".//saml:Subject")
+			subject.RemoveChild(subject.FindElement("saml:NameID"))
+			name := subject.CreateElement("foreign:NameID")
+			name.CreateAttr("xmlns:foreign", "urn:untrusted:identity")
+			name.SetText("another-user@example.test")
+		},
 		"recipient": func(e *etree.Element) {
 			e.FindElement(".//saml:SubjectConfirmationData").CreateAttr("Recipient", "https://evil.test")
 		},

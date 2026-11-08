@@ -29,8 +29,10 @@ import (
 )
 
 type remote struct {
-	deleteHook func()
-	lostDelete bool
+	credentialCommands func(string) ([]byte, error)
+	credentialWrite    func(string, []byte) error
+	deleteHook         func()
+	lostDelete         bool
 	harness.Sandbox
 	state                                                                                  string
 	metadata                                                                               map[string]string
@@ -138,8 +140,17 @@ func (r *remote) Kill(_ context.Context, pid int) error {
 	r.processes = slices.DeleteFunc(r.processes, func(p harness.Process) bool { return p.PID == pid })
 	return nil
 }
-func (r *remote) Run(context.Context, string) ([]byte, error) {
+func (r *remote) Run(_ context.Context, command string) ([]byte, error) {
+	if r.credentialCommands != nil {
+		return r.credentialCommands(command)
+	}
 	return []byte("/home/template/workspace"), nil
+}
+func (r *remote) Write(_ context.Context, path string, raw []byte) error {
+	if r.credentialWrite != nil {
+		return r.credentialWrite(path, raw)
+	}
+	return nil
 }
 func (r *remote) Read(context.Context, string) (io.ReadCloser, error) {
 	return io.NopCloser(strings.NewReader("{}")), nil
@@ -579,12 +590,13 @@ func TestLostAcknowledgements(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			if err := e.Tick(t.Context()); !errors.Is(err, harness.ErrUncertain) {
+			if err := e.Tick(t.Context()); (phase == "create" && err != nil) || (phase != "create" && !errors.Is(err, harness.ErrUncertain)) {
 				t.Fatalf("want uncertain, got %v", err)
 			}
 			e.Disconnect()
 			e = executor(a.SessionID, s, r)
 			defer e.Disconnect()
+			e.clock = func() time.Time { return time.Now().Add(10 * time.Second) }
 			tick(t, e)
 			tick(t, e)
 			if r.creates != 1 || r.launches != 1 || r.starts != 1 {
@@ -724,14 +736,37 @@ func TestPauseFailureAndSandboxLoss(t *testing.T) {
 		t.Fatal(record, err)
 	}
 }
-func TestSandboxHTTPSProxyInjected(t *testing.T) {
-	s, r, _, e := setup(t)
-	tick(t, e)
-	if r.env["HTTPS_PROXY"] != s.Settings.SandboxProxyURL || r.env["HTTP_PROXY"] != s.Settings.SandboxProxyURL || r.env["NO_PROXY"] != "localhost,127.0.0.1" {
-		t.Fatal("sandbox did not receive HTTPS proxy environment")
-	}
-	if _, ok := r.env["ALL_PROXY"]; ok {
-		t.Fatal("obsolete SOCKS proxy environment injected")
+func TestSandboxProxyInjected(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		proxy string
+		socks bool
+	}{
+		{"default HTTPS", config.DefaultSettings().SandboxProxyURL, false},
+		{"HTTP", "http://proxy.example:3128", false},
+		{"SOCKS5", "socks5://proxy.example:1080", true},
+		{"SOCKS5H", "socks5h://sandbox-proxy.agentbox.ru:65180", true},
+		{"uppercase SOCKS5H", "SOCKS5H://proxy.example:1080", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s, r, _, e := setup(t)
+			s.Settings.SandboxProxyURL = tc.proxy
+			tick(t, e)
+			want := map[string]string{"NO_PROXY": "localhost,127.0.0.1"}
+			if tc.socks {
+				want["ALL_PROXY"] = tc.proxy
+			} else {
+				want["HTTPS_PROXY"] = tc.proxy
+				want["HTTP_PROXY"] = tc.proxy
+			}
+			for _, name := range []string{"HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY", "NO_PROXY"} {
+				got, exists := r.env[name]
+				value, present := want[name]
+				if got != value || exists != present {
+					t.Errorf("%s=%q (present=%t), want %q (present=%t)", name, got, exists, value, present)
+				}
+			}
+		})
 	}
 }
 

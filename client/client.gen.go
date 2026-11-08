@@ -981,6 +981,29 @@ type Accepted struct {
 	SessionID openapi_types.UUID `json:"session_id"`
 }
 
+// AccessContext Trusted caller snapshot for a new invocation. Never inferred from prompts or message metadata. Protected service scope changes return 409 service_scope_changed before execution.
+type AccessContext struct {
+	// AllowedInputSubjects Frozen explicit allowlist for SendMessage during this run. Absent or empty denies interactive inputs. The initiating subject need not be listed. Never forwarded to credentials providers.
+	AllowedInputSubjects *[]AccessSubject   `json:"allowed_input_subjects,omitempty"`
+	ContextObservedAt    time.Time          `json:"context_observed_at"`
+	InvocationID         openapi_types.UUID `json:"invocation_id"`
+
+	// ScopeContext Opaque JSON object interpreted only by the selected credentials provider. Its serialized JSON must not exceed 1 MiB. Orpheus does not derive input permissions from this object.
+	ScopeContext AccessScopeContext `json:"scope_context"`
+
+	// Subject A namespaced human or service principal, supplied by a trusted caller.
+	Subject AccessSubject `json:"subject"`
+}
+
+// AccessScopeContext Opaque JSON object interpreted only by the selected credentials provider. Its serialized JSON must not exceed 1 MiB. Orpheus does not derive input permissions from this object.
+type AccessScopeContext = map[string]json.RawMessage
+
+// AccessSubject A namespaced human or service principal, supplied by a trusted caller.
+type AccessSubject struct {
+	ID        string `json:"id"`
+	Namespace string `json:"namespace"`
+}
+
 // AccountLimitBucket defines model for AccountLimitBucket.
 type AccountLimitBucket struct {
 	LimitID              string              `json:"limit_id"`
@@ -1153,6 +1176,9 @@ type ConfigurationInput struct {
 
 // CreateRun defines model for CreateRun.
 type CreateRun struct {
+	// AccessContext Trusted caller snapshot for a new invocation. Never inferred from prompts or message metadata. Protected service scope changes return 409 service_scope_changed before execution.
+	AccessContext *AccessContext `json:"access_context,omitempty"`
+
 	// Env Explicit environment variables available only to this run's before_run and after_run hooks. Override session sources with the same names; never passed to the harness, after_create, or before_remove.
 	Env *map[string]string `json:"env,omitempty"`
 
@@ -1171,7 +1197,10 @@ type CreateRun struct {
 
 // CreateSession defines model for CreateSession.
 type CreateSession struct {
-	// AllowMultipleRuns Immutable session policy. If false, only the run created with the session is allowed and its sandbox is deleted after completion, failure or cancellation. If true, the sandbox is paused for subsequent runs. Recovery and messages within the current run are allowed in either mode.
+	// AccessContext Trusted caller snapshot for a new invocation. Never inferred from prompts or message metadata. Protected service scope changes return 409 service_scope_changed before execution.
+	AccessContext *AccessContext `json:"access_context,omitempty"`
+
+	// AllowMultipleRuns Immutable session policy. If false, only the run created with the session is allowed and its sandbox is deleted after completion, failure or cancellation. If true, the sandbox is paused for subsequent runs until its retention period expires. Recovery and messages within the current run are allowed in either mode.
 	AllowMultipleRuns *bool              `json:"allow_multiple_runs,omitempty"`
 	Configuration     ConfigurationInput `json:"configuration"`
 
@@ -1319,6 +1348,11 @@ type HooksInput struct {
 	TimeoutSeconds *int `json:"timeout_seconds,omitempty"`
 }
 
+// InputAccessContext Confirmed authors of every message in order, checked against the active run's allowed_input_subjects without issuing another credential.
+type InputAccessContext struct {
+	InputSubjects []AccessSubject `json:"input_subjects"`
+}
+
 // JSONResult defines model for JSONResult.
 type JSONResult struct {
 	OriginalBytes *int            `json:"original_bytes"`
@@ -1428,7 +1462,9 @@ type Run struct {
 	AgentStatus       *RunAgentStatus `json:"agent_status"`
 	CancelRequestedAt *time.Time      `json:"cancel_requested_at"`
 	CreatedAt         time.Time       `json:"created_at"`
-	DeadlineAt        *time.Time      `json:"deadline_at"`
+
+	// DeadlineAt Fixed at the first dispatch. Protected services can shorten the configured execution timeout to leave the configured cancellation grace and worker polling interval before their earliest absolute credential deadline. Renewal and worker recovery do not extend it.
+	DeadlineAt *time.Time `json:"deadline_at"`
 
 	// EnvFrom Sorted orchestrator environment variable names for this run, including expanded services.
 	EnvFrom []string `json:"env_from"`
@@ -1548,6 +1584,9 @@ type SandboxStateState string
 
 // SendMessage defines model for SendMessage.
 type SendMessage struct {
+	// AccessContext Confirmed authors of every message in order, checked against the active run's allowed_input_subjects without issuing another credential.
+	AccessContext *InputAccessContext `json:"access_context,omitempty"`
+
 	// Messages Ordered user messages accepted atomically for the active run.
 	Messages []TextMessage `json:"messages"`
 }
@@ -2555,7 +2594,7 @@ type ClientInterface interface {
 
 	// CreateRunWithBody Create Run
 	//
-	// Create a subsequent run. Sessions created with allow_multiple_runs=false reject this operation with 409 multiple_runs_not_allowed, regardless of the first run or sandbox state. Idempotent replay of an accepted request returns the original acceptance.
+	// Create a subsequent run. Sessions created with allow_multiple_runs=false reject this operation with 409 multiple_runs_not_allowed. Deleting, deleted or unavailable environments reject new input with 409 session_unavailable; create a new session with the required context. If external sandbox loss is discovered after acceptance, the run fails asynchronously with sandbox_lost. Idempotent replay of an accepted request returns the original acceptance, regardless of sandbox state.
 	//
 	// Takes any type of body and a specified content type.
 	//
@@ -2564,7 +2603,7 @@ type ClientInterface interface {
 
 	// CreateRun Create Run
 	//
-	// Create a subsequent run. Sessions created with allow_multiple_runs=false reject this operation with 409 multiple_runs_not_allowed, regardless of the first run or sandbox state. Idempotent replay of an accepted request returns the original acceptance.
+	// Create a subsequent run. Sessions created with allow_multiple_runs=false reject this operation with 409 multiple_runs_not_allowed. Deleting, deleted or unavailable environments reject new input with 409 session_unavailable; create a new session with the required context. If external sandbox loss is discovered after acceptance, the run fails asynchronously with sandbox_lost. Idempotent replay of an accepted request returns the original acceptance, regardless of sandbox state.
 	//
 	// Takes a body of the `application/json` content type.
 	//
@@ -2855,7 +2894,7 @@ func (c *Client) ListRuns(ctx context.Context, sid openapi_types.UUID, params *L
 
 // CreateRunWithBody Create Run
 //
-// Create a subsequent run. Sessions created with allow_multiple_runs=false reject this operation with 409 multiple_runs_not_allowed, regardless of the first run or sandbox state. Idempotent replay of an accepted request returns the original acceptance.
+// Create a subsequent run. Sessions created with allow_multiple_runs=false reject this operation with 409 multiple_runs_not_allowed. Deleting, deleted or unavailable environments reject new input with 409 session_unavailable; create a new session with the required context. If external sandbox loss is discovered after acceptance, the run fails asynchronously with sandbox_lost. Idempotent replay of an accepted request returns the original acceptance, regardless of sandbox state.
 //
 // Takes any type of body and a specified content type.
 //
@@ -2874,7 +2913,7 @@ func (c *Client) CreateRunWithBody(ctx context.Context, sid openapi_types.UUID, 
 
 // CreateRun Create Run
 //
-// Create a subsequent run. Sessions created with allow_multiple_runs=false reject this operation with 409 multiple_runs_not_allowed, regardless of the first run or sandbox state. Idempotent replay of an accepted request returns the original acceptance.
+// Create a subsequent run. Sessions created with allow_multiple_runs=false reject this operation with 409 multiple_runs_not_allowed. Deleting, deleted or unavailable environments reject new input with 409 session_unavailable; create a new session with the required context. If external sandbox loss is discovered after acceptance, the run fails asynchronously with sandbox_lost. Idempotent replay of an accepted request returns the original acceptance, regardless of sandbox state.
 //
 // Takes a body of the `application/json` content type.
 //
@@ -4521,7 +4560,7 @@ type ClientWithResponsesInterface interface {
 
 	// CreateRunWithBodyWithResponse Create Run
 	//
-	// Create a subsequent run. Sessions created with allow_multiple_runs=false reject this operation with 409 multiple_runs_not_allowed, regardless of the first run or sandbox state. Idempotent replay of an accepted request returns the original acceptance.
+	// Create a subsequent run. Sessions created with allow_multiple_runs=false reject this operation with 409 multiple_runs_not_allowed. Deleting, deleted or unavailable environments reject new input with 409 session_unavailable; create a new session with the required context. If external sandbox loss is discovered after acceptance, the run fails asynchronously with sandbox_lost. Idempotent replay of an accepted request returns the original acceptance, regardless of sandbox state.
 	//
 	// Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
 	//
@@ -4530,7 +4569,7 @@ type ClientWithResponsesInterface interface {
 
 	// CreateRunWithResponse Create Run
 	//
-	// Create a subsequent run. Sessions created with allow_multiple_runs=false reject this operation with 409 multiple_runs_not_allowed, regardless of the first run or sandbox state. Idempotent replay of an accepted request returns the original acceptance.
+	// Create a subsequent run. Sessions created with allow_multiple_runs=false reject this operation with 409 multiple_runs_not_allowed. Deleting, deleted or unavailable environments reject new input with 409 session_unavailable; create a new session with the required context. If external sandbox loss is discovered after acceptance, the run fails asynchronously with sandbox_lost. Idempotent replay of an accepted request returns the original acceptance, regardless of sandbox state.
 	//
 	// Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
 	//
@@ -6524,7 +6563,7 @@ func (c *ClientWithResponses) ListRunsWithResponse(ctx context.Context, sid open
 
 // CreateRunWithBodyWithResponse Create Run
 //
-// Create a subsequent run. Sessions created with allow_multiple_runs=false reject this operation with 409 multiple_runs_not_allowed, regardless of the first run or sandbox state. Idempotent replay of an accepted request returns the original acceptance.
+// Create a subsequent run. Sessions created with allow_multiple_runs=false reject this operation with 409 multiple_runs_not_allowed. Deleting, deleted or unavailable environments reject new input with 409 session_unavailable; create a new session with the required context. If external sandbox loss is discovered after acceptance, the run fails asynchronously with sandbox_lost. Idempotent replay of an accepted request returns the original acceptance, regardless of sandbox state.
 //
 // Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
 //
@@ -6539,7 +6578,7 @@ func (c *ClientWithResponses) CreateRunWithBodyWithResponse(ctx context.Context,
 
 // CreateRunWithResponse Create Run
 //
-// Create a subsequent run. Sessions created with allow_multiple_runs=false reject this operation with 409 multiple_runs_not_allowed, regardless of the first run or sandbox state. Idempotent replay of an accepted request returns the original acceptance.
+// Create a subsequent run. Sessions created with allow_multiple_runs=false reject this operation with 409 multiple_runs_not_allowed. Deleting, deleted or unavailable environments reject new input with 409 session_unavailable; create a new session with the required context. If external sandbox loss is discovered after acceptance, the run fails asynchronously with sandbox_lost. Idempotent replay of an accepted request returns the original acceptance, regardless of sandbox state.
 //
 // Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
 //
