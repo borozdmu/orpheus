@@ -81,6 +81,12 @@ func run(ctx context.Context, args []string, out io.Writer) error {
 		}
 		return nil
 	}
+	if args[0] == "serve-shared" {
+		if len(args) != 2 {
+			return errors.New("serve-shared requires a tenant directory")
+		}
+		return serveShared(ctx, args[1])
+	}
 	if args[0] != "serve" && args[0] != "worker" && args[0] != "migrate" {
 		return errors.New("unknown command")
 	}

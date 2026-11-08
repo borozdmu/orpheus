@@ -20,6 +20,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/orpheus-agents/orpheus/internal/config"
 	"github.com/orpheus-agents/orpheus/internal/secret"
+	"github.com/orpheus-agents/orpheus/internal/servicecredentials"
 	"github.com/orpheus-agents/orpheus/internal/session"
 	"github.com/orpheus-agents/orpheus/internal/store/db"
 )
@@ -28,10 +29,11 @@ const CapacityLock int64 = 4857668146151
 const WorkerLock int64 = 4857668146152
 
 type Store struct {
-	Pool     *pgxpool.Pool
-	Settings config.Settings
-	Profiles config.Profiles
-	Cipher   *secret.Cipher
+	CredentialClient servicecredentials.Client
+	Pool             *pgxpool.Pool
+	Settings         config.Settings
+	Profiles         config.Profiles
+	Cipher           *secret.Cipher
 }
 type SessionRecord db.Session
 
@@ -183,19 +185,48 @@ func RunViews(ctx context.Context, q db.DBTX, records []RunRecord) ([]session.Ru
 	return views, nil
 }
 func SessionView(ctx context.Context, q db.DBTX, s SessionRecord) (session.Session, error) {
-	r, err := runRecord(db.New(q).LatestRun(ctx, s.ID))
+	views, err := SessionViews(ctx, q, []SessionRecord{s})
 	if err != nil {
 		return session.Session{}, err
 	}
-	v, err := RunView(ctx, q, r)
+	return views[0], nil
+}
+
+// SessionViews loads latest runs and their related data once for the whole page.
+// Results retain the input order within the caller's snapshot.
+func SessionViews(ctx context.Context, q db.DBTX, records []SessionRecord) ([]session.Session, error) {
+	views := make([]session.Session, 0, len(records))
+	if len(records) == 0 {
+		return views, nil
+	}
+	ids := make([]uuid.UUID, 0, len(records))
+	for _, s := range records {
+		ids = append(ids, s.ID)
+	}
+	runs, err := runRecords(db.New(q).LatestRunsForSessions(ctx, ids))
 	if err != nil {
-		return session.Session{}, err
+		return nil, err
 	}
-	out := session.Session{AllowMultipleRuns: s.AllowMultipleRuns, Usage: s.Usage(), Namespace: s.Namespace, ExternalKey: s.ExternalKey, ID: s.ID, CreatedAt: s.CreatedAt, Configuration: s.Configuration.Public, Sandbox: s.Sandbox(), LastRunID: r.ID, LastRunCreatedAt: r.CreatedAt, Status: r.Status, Phase: r.Phase, FinalMessage: v.FinalMessage, Error: r.Error}
-	if !r.Status.Terminal() {
-		out.ActiveRunID = &r.ID
+	runViews, err := RunViews(ctx, q, runs)
+	if err != nil {
+		return nil, err
 	}
-	return out, nil
+	bySession := make(map[uuid.UUID]session.Run, len(runViews))
+	for _, r := range runViews {
+		bySession[r.SessionID] = r
+	}
+	for _, s := range records {
+		r, ok := bySession[s.ID]
+		if !ok {
+			return nil, pgx.ErrNoRows
+		}
+		out := session.Session{AllowMultipleRuns: s.AllowMultipleRuns, Usage: s.Usage(), Namespace: s.Namespace, ExternalKey: s.ExternalKey, ID: s.ID, CreatedAt: s.CreatedAt, Configuration: s.Configuration.Public, Sandbox: s.Sandbox(), LastRunID: r.ID, LastRunCreatedAt: r.CreatedAt, Status: r.Status, Phase: r.Phase, FinalMessage: r.FinalMessage, Error: r.Error}
+		if !r.Status.Terminal() {
+			out.ActiveRunID = &r.ID
+		}
+		views = append(views, out)
+	}
+	return views, nil
 }
 func Advisory(ctx context.Context, tx pgx.Tx, key int64) error {
 	return db.New(tx).AdvisoryLock(ctx, key)
@@ -505,6 +536,8 @@ func selectFinalMessage(ctx context.Context, tx pgx.Tx, r *RunRecord) error {
 const maxAdmissionMessages = 256
 
 type Admission struct {
+	AccessContext    *session.AccessContext
+	InputSubjects    []session.AccessSubject
 	InputFingerprint *string
 	Messages         []session.TextMessage
 	Create           *session.CreateSession
@@ -569,6 +602,28 @@ func fingerprint(a Admission) (string, error) {
 			Services []string `json:"services,omitzero"`
 		}{c.Sandbox.Template, names, c.Sandbox.EnvFrom, slices.Sorted(slices.Values(c.Sandbox.Services))}, Limits: c.Limits, Hooks: c.Hooks}, Messages: messages, RunEnvNames: runEnvNames, RunEnvFrom: runEnvFrom, RunServices: runServices}
 	}
+	if a.AccessContext != nil || len(a.InputSubjects) > 0 {
+		access := a.AccessContext
+		if access != nil {
+			// Opaque nested objects must not make equivalent retries conflict.
+			// Keep decimal values lossless and do not mutate the caller's snapshot.
+			canonical := *access
+			canonical.ScopeContext = make(session.AccessScopeContext, len(access.ScopeContext))
+			for field, raw := range access.ScopeContext {
+				v, err := canonicalJSON(raw)
+				if err != nil {
+					return "", err
+				}
+				canonical.ScopeContext[field] = v
+			}
+			access = &canonical
+		}
+		value = struct {
+			Value         any                     `json:"value"`
+			AccessContext *session.AccessContext  `json:"access_context,omitzero"`
+			InputSubjects []session.AccessSubject `json:"input_subjects,omitzero"`
+		}{value, access, a.InputSubjects}
+	}
 	raw, err := json.Marshal(value)
 	if err != nil {
 		return "", err
@@ -587,6 +642,7 @@ func (s *Store) Accept(ctx context.Context, a Admission) (session.Acceptance, er
 		a.Env = a.Create.Env
 		a.EnvFrom = a.Create.EnvFrom
 		a.Services = a.Create.Services
+		a.AccessContext = a.Create.AccessContext
 	}
 	if len(a.Messages) == 0 {
 		problem := session.Problem(422, "validation_error", "At least one message is required.")
@@ -600,6 +656,11 @@ func (s *Store) Accept(ctx context.Context, a Admission) (session.Acceptance, er
 	}
 	if err := a.validateExternal(); err != nil {
 		return result, err
+	}
+	if a.AccessContext != nil {
+		if err := a.AccessContext.Validate(); err != nil {
+			return result, err
+		}
 	}
 	for i, message := range a.Messages {
 		if err := config.ValidateText(message.Text, i); err != nil {
@@ -625,43 +686,27 @@ func (s *Store) Accept(ctx context.Context, a Admission) (session.Acceptance, er
 	if err != nil {
 		return result, err
 	}
+	if prior, found, err := s.replay(ctx, s.Pool, a, op, resource, digest); err != nil || found {
+		return prior, err
+	}
+	credentials, err := s.issueCredentials(ctx, a)
+	if err != nil {
+		if prior, found, replayErr := s.replay(ctx, s.Pool, a, op, resource, digest); replayErr != nil || found {
+			return prior, replayErr
+		}
+		return result, err
+	}
 	err = pgx.BeginFunc(ctx, s.Pool, func(tx pgx.Tx) error {
 		if err := Advisory(ctx, tx, LockKey(op+":"+resource+":"+a.Key.String())); err != nil {
 			return err
 		}
-		prior, err := db.New(tx).GetIdempotency(ctx, db.GetIdempotencyParams{Operation: op, Resource: resource, Key: a.Key})
-		if err == nil {
-			result = session.Acceptance{SessionID: prior.SessionID, RunID: prior.RunID, MessageID: prior.MessageID}
-			same := prior.Fingerprint == digest
-			if same && a.Create != nil {
-				r, e := GetSession(ctx, tx, result.SessionID, false)
-				if e != nil {
-					return e
-				}
-				env, e := s.Cipher.Decrypt(r.ID, r.EnvCiphertext)
-				if e != nil {
-					return session.Problem(503, "storage_unavailable", "Stored environment cannot be decrypted.")
-				}
-				same = maps.Equal(env, a.Create.Configuration.Sandbox.Env)
-			}
-			if same && a.RunID == uuid.Nil {
-				r, e := GetRun(ctx, tx, result.SessionID, result.RunID)
-				if e != nil {
-					return e
-				}
-				env, e := s.Cipher.DecryptRun(r.SessionID, r.ID, r.EnvCiphertext)
-				if e != nil {
-					return session.Problem(503, "storage_unavailable", "Stored run environment cannot be decrypted.")
-				}
-				same = maps.Equal(env, a.Env)
-			}
-			if !same {
-				return session.Problem(409, "idempotency_conflict", "Idempotency key was used for another request.")
-			}
-			return nil
-		}
-		if !errors.Is(err, pgx.ErrNoRows) {
+		prior, found, err := s.replay(ctx, tx, a, op, resource, digest)
+		if err != nil {
 			return err
+		}
+		if found {
+			result = prior
+			return nil
 		}
 		var runServices []session.Service
 		var runEnvFrom []string
@@ -703,6 +748,9 @@ func (s *Store) Accept(ctx context.Context, a Admission) (session.Acceptance, er
 		if a.Create == nil && a.RunID == uuid.Nil && !record.AllowMultipleRuns {
 			return session.Problem(409, "multiple_runs_not_allowed", "This session allows only one run. Create a new session for another run, or set allow_multiple_runs=true when creating a session that must support continuation.")
 		}
+		if a.RunID == uuid.Nil && (record.SandboxState == "unavailable" || record.SandboxState == "deleting" || record.SandboxState == "deleted") {
+			return session.Problem(409, "session_unavailable", "Session environment is unavailable. Create a new session with the required context.")
+		}
 		var run RunRecord
 		if BudgetExhausted(record) {
 			return session.Problem(409, "token_limit_exceeded", "Session token budget is exhausted.")
@@ -715,16 +763,19 @@ func (s *Store) Accept(ctx context.Context, a Admission) (session.Acceptance, er
 			if run.Status != session.Running || run.CancelRequestedAt != nil {
 				return session.Problem(409, "run_not_accepting_messages", "Run is not accepting messages.")
 			}
-		} else {
-			if record.SandboxState == "unavailable" {
-				return session.Problem(409, "session_unavailable", "Session environment is unavailable.")
+			if err := s.checkCredentials(ctx, tx, record, a, credentials); err != nil {
+				return err
 			}
+		} else {
 			active, err := ActiveRun(ctx, tx, record.ID)
 			if err != nil {
 				return err
 			}
 			if active != nil {
 				return session.Problem(409, "session_busy", "Session already has an unfinished run.")
+			}
+			if err := s.checkCredentials(ctx, tx, record, a, credentials); err != nil {
+				return err
 			}
 			if !record.SlotReserved {
 				count, err := db.New(tx).CountReserved(ctx)
@@ -749,9 +800,12 @@ func (s *Store) Accept(ctx context.Context, a Admission) (session.Acceptance, er
 			if err != nil {
 				return err
 			}
+			if err := s.insertCredentials(ctx, tx, record.ID, run.ID, credentials); err != nil {
+				return err
+			}
 			record.NextRunNumber++
 		}
-		for _, input := range a.Messages {
+		for index, input := range a.Messages {
 			m := MessageRecord{
 				ExternalKey: input.ExternalKey, Metadata: input.Metadata, ID: uuid.New(),
 				SessionID:      record.ID,
@@ -764,6 +818,15 @@ func (s *Store) Accept(ctx context.Context, a Admission) (session.Acceptance, er
 			run.NextDeliveryNumber++
 			if err := PublishMessage(ctx, tx, &record, &m); err != nil {
 				return err
+			}
+			if len(a.InputSubjects) > 0 {
+				subject, err := json.Marshal(a.InputSubjects[index])
+				if err != nil {
+					return err
+				}
+				if err := db.New(tx).InsertInputSubject(ctx, db.InsertInputSubjectParams{MessageID: m.ID, Subject: subject}); err != nil {
+					return err
+				}
 			}
 			result.MessageID = m.ID
 		}
