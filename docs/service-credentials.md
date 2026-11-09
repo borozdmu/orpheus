@@ -45,7 +45,9 @@ existing Kord native `issue` endpoint select only `scope_context` and
 `context_observed_at`: the current Provider rejects `subject`, `source` and
 `confirmation`. That path retains Provider-owned native context validation; it
 does not provide this proposal's source confirmation guarantee. The generic
-confirmed path requires a separately reviewed Provider adapter. Do not strip
+confirmed path requires a separately reviewed Provider adapter. An isolated
+opt-in candidate and a synthetic-source joint test now exist; this is not an
+installed or agreed upstream interface. Do not strip
 unknown fields and call that a confirmed integration.
 
 The 300/1200-second limits above match the Kord pilot's current protocol. Omit a
@@ -209,7 +211,32 @@ sandbox/model simulator. It checks native projection, bearer installation,
 renewal, cancellation, revocation, revoke replay, and denial of unsupported fields.
 It does not establish generic source support in the current Kord Provider.
 
-Live AgentBox, source authority correctness, actual protected operations,
+The additional opt-in cross-repository `TestGenericProviderA9` uses an actual
+versioned Provider candidate/SQLite, Core HTTP/store/worker code and PostgreSQL.
+A synthetic authoritative registry independently checks original source identity,
+revision, initiator, scope, complete audience and frozen input authority. It
+checks the Provider projection separately and binds it to the original full Core
+context digest; neither endpoint approves an echo alone. Real HTTPS callbacks
+use explicitly trusted fixture CAs. Sandbox/model execution, identity/policy facts
+and source records remain synthetic.
+
+Its 15 cases cover human and GitLab/Space service principals, issue/renew, a
+Provider-to-Core callback before sensitive access, worker restoration, graceful
+cancellation and durable revoke/replay, source revision/audience changes, forged
+author/input/source snapshots, rights reduction, compatible revision continuation,
+new source/audience memory boundaries and expiry. A synthetic service principal
+has no employee identity and uses an explicit existing policy; no human or MM
+object is fabricated. The current Kord candidate denies empty audiences without
+a separate service-only policy, which is tested as a distinct refusal.
+
+Provider expiry is exercised by an explicit fixture clock advance. Core outage
+expiry uses a saved lease moved into the past, rather than waiting five minutes.
+A fresh Provider instance reopens the ledger for each request; a new Core executor
+restores its authority from PostgreSQL. These are recovery checks, not an OS crash
+or live delivery test. Source correctness is established only for this synthetic
+registry; the candidate interface is not an upstream agreement.
+
+Live AgentBox, real source authority correctness, actual business operations,
 connector delivery, source changes during publication and rollout remain separate
 acceptance checks. This proposal changes no running bot, service, permission,
 secret, queue, or published upstream PR.
