@@ -251,7 +251,7 @@ func resolveHooks(input *session.HooksInput) (session.HooksConfiguration, error)
 		if len(*script.text) > 65536 || strings.ContainsRune(*script.text, 0) || strings.ContainsRune(line, '\r') || !strings.HasPrefix(line, "#!") || strings.TrimSpace(line[2:]) == "" {
 			return hooks, invalid("A hook requires an LF-terminated shebang and at most 65536 UTF-8 bytes without NUL.", "configuration", "hooks", script.name)
 		}
-		*script.dest = script.text
+		*script.dest = new(*script.text)
 	}
 	return hooks, nil
 }
@@ -310,6 +310,10 @@ func Resolve(in session.ConfigurationInput, p Profiles, allowlist []string, defa
 	}
 	allowlist = p.EnvironmentAllowlist(allowlist)
 	hooks, err := resolveHooks(in.Hooks)
+	if err != nil {
+		return out, err
+	}
+	hooks, err = appendServiceBeforeRun(hooks, services, p)
 	if err != nil {
 		return out, err
 	}

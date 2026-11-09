@@ -123,7 +123,22 @@ env_from = ["HELPDESK_URL", "HELPDESK_TOKEN"]
 ```
 
 Supply values to the worker. `GET /api/v1/services` returns the catalog without
-secret values. Select codes in `configuration.sandbox.services` for the agent
+secret values. A trusted service entry may also define `before_run` as a script
+with a shebang. Selected session services append their scripts after the caller's
+`before_run`, in service-code order. Each script keeps its own interpreter and
+runs as a separate program in the same sandbox; the first failure stops the
+hook. Scripts inherit the hook environment and initial working directory, not
+process-local exports or directory changes from preceding scripts. The combined
+script is frozen with the session and has the existing 65536-byte limit. An
+unselected service never installs anything. The public service catalog and SDK
+do not accept or expose a service script field. A service with `before_run` must
+be selected in `configuration.sandbox.services`; selecting it only for one run
+returns `422 invalid_service_scope`. Existing accepted session hooks and
+idempotent replays remain frozen when the catalog changes. Selected scripts are
+visible through the existing session hooks: use public installer code, never
+credentials or secrets.
+
+Select codes in `configuration.sandbox.services` for the agent
 and session hooks, or top-level `services` for only that run's `before_run` and
 `after_run`. Services combine with `env_from`. Their ENV names also join the
 explicit `HARNESS_ENV_ALLOWLIST` on API and worker. No service is automatically

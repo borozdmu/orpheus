@@ -34,8 +34,8 @@ func (s *Store) issueCredentials(ctx context.Context, a Admission) (servicecrede
 		}
 	}
 	for _, code := range a.Services {
-		if service := s.Profiles.Services[code]; service.Provider != nil {
-			return state, session.Problem(422, "invalid_service_scope", "File credentials must be selected in configuration.sandbox.services.")
+		if service := s.Profiles.Services[code]; service.Provider != nil || service.BeforeRun != nil {
+			return state, session.Problem(422, "invalid_service_scope", "Services with credentials or before_run hooks must be selected in configuration.sandbox.services.")
 		}
 	}
 	paths := map[string]bool{}
