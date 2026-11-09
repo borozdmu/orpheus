@@ -139,11 +139,11 @@ func TestServiceEnvironmentUsesFrozenReferencesAndCurrentAllowlist(t *testing.T)
 }
 
 func TestProviderSecretNeverEntersEnvironmentAllowlist(t *testing.T) {
-	p := Profiles{Services: map[string]Service{"protected": {Name: "Protected", Description: "Protected service", Provider: &servicecredentials.Config{Endpoint: "https://provider.invalid", SecretEnv: "CORE_SECRET", TokenFile: "~/.kord/run.token", ContextFields: []string{"subject", "scope_context", "context_observed_at"}}}, "legacy": {Name: "Legacy", Description: "Legacy service", EnvFrom: []string{"LEGACY_KEY", "CORE_SECRET"}}}}
+	p := Profiles{Services: map[string]Service{"protected": {Name: "Protected", Description: "Protected service", Provider: &servicecredentials.Config{Endpoint: "https://provider.invalid", SecretEnv: "CORE_SECRET", Confirmation: &servicecredentials.ConfirmationConfig{Endpoint: "https://source.invalid", SecretEnv: "SOURCE_SECRET"}, TokenFile: "~/.kord/run.token", ContextFields: []string{"subject", "scope_context", "context_observed_at"}}}, "legacy": {Name: "Legacy", Description: "Legacy service", EnvFrom: []string{"LEGACY_KEY", "CORE_SECRET", "SOURCE_SECRET"}}}}
 	if err := validateServices(p.Services); err != nil {
 		t.Fatal(err)
 	}
-	if got := p.EnvironmentAllowlist([]string{"EXTRA", "CORE_SECRET"}); slices.Contains(got, "CORE_SECRET") || !slices.Contains(got, "LEGACY_KEY") {
+	if got := p.EnvironmentAllowlist([]string{"EXTRA", "CORE_SECRET", "SOURCE_SECRET"}); slices.Contains(got, "CORE_SECRET") || slices.Contains(got, "SOURCE_SECRET") || !slices.Contains(got, "LEGACY_KEY") {
 		t.Fatal(got)
 	}
 }

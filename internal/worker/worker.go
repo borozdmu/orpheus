@@ -50,6 +50,7 @@ type Executor struct {
 	timeoutRunID            uuid.UUID
 	runnerReady             bool
 	hookTermSent            uuid.UUID
+	clock                   func() time.Time
 }
 
 func NewExecutor(id uuid.UUID, s *store.Store, p harness.Platform) *Executor {
@@ -100,6 +101,7 @@ type operationResult struct {
 	TurnID      string  `json:"turn_id,omitzero"`
 	ID          string  `json:"id,omitzero"`
 	Path        *string `json:"path,omitzero"`
+	Adopted     bool    `json:"adopted,omitzero"`
 	Initialized bool    `json:"initialized,omitzero"`
 	Accepted    *bool   `json:"accepted,omitzero"`
 }
@@ -116,8 +118,40 @@ func (e *Executor) operation(ctx context.Context, kind string, rid, mid *uuid.UU
 	return e.Store.Operation(ctx, e.ID, kind, rid, mid, params)
 }
 func (e *Executor) opStatus(ctx context.Context, id uuid.UUID, status string, result any) error {
+	if status == "sending" {
+		blocked := false
+		err := e.Store.Mutate(ctx, e.ID, false, func(tx pgx.Tx, _ *store.SessionRecord) error {
+			o, err := db.New(tx).GetSessionOperation(ctx, db.GetSessionOperationParams{ID: id, SessionID: e.ID})
+			if err != nil {
+				return err
+			}
+			if o.Kind == "launch" && o.RunID != nil {
+				run, err := store.GetRun(ctx, tx, e.ID, *o.RunID)
+				if err != nil {
+					return err
+				}
+				if run.Status.Terminal() || run.CancelRequestedAt != nil {
+					blocked = true
+					return nil
+				}
+			}
+			o.Status = status
+			if o.AttemptedAt == nil {
+				o.AttemptedAt = new(time.Now().UTC())
+			}
+			return store.SaveOperation(ctx, tx, &o)
+		})
+		if err != nil {
+			return err
+		}
+		if blocked {
+			return errProvisionWait
+		}
+		return nil
+	}
 	return e.Store.SetOperation(ctx, e.ID, id, status, result)
 }
+
 func (e *Executor) invoke(ctx context.Context, o store.Operation, call func() (operationResult, error)) (operationResult, error) {
 	if o.Status == "confirmed" {
 		return decodeResult(o)
@@ -258,6 +292,9 @@ func (e *Executor) Run(ctx context.Context) {
 }
 func (e *Executor) Tick(ctx context.Context) error {
 	err := e.tick(ctx)
+	if errors.Is(err, errProvisionWait) {
+		return nil
+	}
 	if err == nil {
 		return nil
 	}
@@ -370,6 +407,9 @@ func (e *Executor) tick(ctx context.Context) error {
 			return err
 		}
 	}
+	if _, err := e.provision(ctx, run.ID, false, nil); err != nil {
+		return err
+	}
 	if run.CancelRequestedAt != nil && run.ExecutionStartedAt == nil {
 		if run.Phase != nil && (*run.Phase == "after_create" || *run.Phase == "before_run") {
 			h, err := e.Store.Hook(ctx, run.ID, *run.Phase)
@@ -392,21 +432,18 @@ func (e *Executor) tick(ctx context.Context) error {
 		if err := e.skipHooks(ctx, *run, "after_create", "before_run", "after_run"); err != nil {
 			return err
 		}
-		if record.SandboxID == nil {
-			attempt, err := e.Store.LatestAttempt(ctx, e.ID, "sandbox_create")
-			if err != nil {
-				return err
-			}
-			if attempt != nil {
-				if err := e.ensureSandbox(ctx, &record, run); err != nil {
-					return err
-				}
-			}
-		}
+
 		return e.cancelRun(ctx, record, *run)
 	}
 	if err := e.ensureSandbox(ctx, &record, run); err != nil {
 		return err
+	}
+	record, run, err = e.read(ctx)
+	if err != nil || run == nil {
+		return err
+	}
+	if run.ExecutionStartedAt == nil && run.CancelRequestedAt != nil {
+		return nil
 	}
 	if done, err := e.serviceCredentials(ctx, record, *run); err != nil || done {
 		return err
@@ -537,6 +574,9 @@ func run(ctx context.Context, s *store.Store, platform harness.Platform, cleanup
 	if !owned {
 		return errors.New("another worker owns the executor lock")
 	}
+	if err := s.RecoverProvisionReservations(ctx); err != nil {
+		return err
+	}
 	slog.InfoContext(ctx, "Worker started")
 	defer slog.InfoContext(ctx, "Worker stopped")
 	execution, cancel := context.WithCancel(ctx)
@@ -545,7 +585,20 @@ func run(ctx context.Context, s *store.Store, platform harness.Platform, cleanup
 	defer func() { cancel(); wg.Wait(); collector.Wait() }()
 	// Purge expired identities even after SAML is disabled, under worker ownership.
 	wg.Go(func() { cleanup(execution, db.New(s.Pool)) })
-	tasks := map[uuid.UUID]<-chan struct{}{}
+	wg.Go(func() {
+		for execution.Err() == nil {
+			if err := s.RevokeTerminalCredentials(execution); err != nil && execution.Err() == nil {
+				slog.WarnContext(execution, "Credential cleanup incomplete", "error_type", diagnostic.Describe(err))
+			}
+			select {
+			case <-execution.Done():
+				return
+			case <-time.After(15 * time.Second):
+			}
+		}
+	})
+	tasks := map[uuid.UUID]workerTask{}
+	var retention sandboxCleanupPass
 	for ctx.Err() == nil {
 		probe, cancelProbe := context.WithTimeout(ctx, s.Settings.DatabasePingTimeout)
 		err := owner.Ping(probe)
@@ -555,9 +608,12 @@ func run(ctx context.Context, s *store.Store, platform harness.Platform, cleanup
 		}
 		// Reap tasks before reading reservations so a stale reservation cannot
 		// restart an executor that released its slot during the query.
-		for id, done := range tasks {
+		for id, task := range tasks {
 			select {
-			case <-done:
+			case <-task.done:
+				if task.cleanupResult != nil {
+					retention.finished(*task.cleanupResult)
+				}
 				delete(tasks, id)
 			default:
 			}
@@ -569,7 +625,7 @@ func run(ctx context.Context, s *store.Store, platform harness.Platform, cleanup
 		for _, id := range ids {
 			if _, ok := tasks[id]; !ok {
 				done := make(chan struct{})
-				tasks[id] = done
+				tasks[id] = workerTask{done: done}
 				wg.Go(func() {
 					defer close(done)
 					executor := NewExecutor(id, s, platform)
@@ -577,6 +633,9 @@ func run(ctx context.Context, s *store.Store, platform harness.Platform, cleanup
 					executor.Run(execution)
 				})
 			}
+		}
+		if err := retention.advance(execution, s, platform, tasks, &wg, time.Now().UTC()); err != nil && execution.Err() == nil {
+			slog.WarnContext(ctx, "Paused sandbox cleanup selection failed", "error_type", diagnostic.Describe(err))
 		}
 		select {
 		case <-ctx.Done():

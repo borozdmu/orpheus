@@ -4,7 +4,9 @@ CREATE TABLE run_service_credentials (
     invocation_id uuid NOT NULL UNIQUE,
     access_context jsonb NOT NULL,
     scopes jsonb NOT NULL,
-    ciphertext text NOT NULL
+    ciphertext text NOT NULL,
+    revoked_at timestamptz,
+    revoke_attempted_at timestamptz
 );
 CREATE TABLE run_input_subjects (
     message_id uuid PRIMARY KEY REFERENCES messages(id) ON DELETE CASCADE,

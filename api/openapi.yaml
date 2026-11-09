@@ -362,12 +362,32 @@ components:
             type: object
             additionalProperties: true
             x-go-type: map[string]json.RawMessage
+        SourceContext:
+            description: Exact source revision and complete result audience, including service principals. An explicit empty audience is valid for jobs without result readers. No transport-specific fields are required.
+            type: object
+            additionalProperties: false
+            required: [identity, revision, audience]
+            properties:
+                identity:
+                    $ref: '#/components/schemas/AccessSubject'
+                revision:
+                    type: string
+                    minLength: 1
+                    maxLength: 128
+                audience:
+                    type: array
+                    maxItems: 4096
+                    uniqueItems: true
+                    items:
+                        $ref: '#/components/schemas/AccessSubject'
         AccessContext:
             description: Trusted caller snapshot for a new invocation. Never inferred from prompts or message metadata. Protected service scope changes return 409 service_scope_changed before execution.
             type: object
             additionalProperties: false
             required: [invocation_id, subject, scope_context, context_observed_at]
             properties:
+                source:
+                    $ref: '#/components/schemas/SourceContext'
                 invocation_id:
                     type: string
                     format: uuid
@@ -403,7 +423,7 @@ components:
                 access_context:
                     $ref: '#/components/schemas/AccessContext'
                 allow_multiple_runs:
-                    description: Immutable session policy. If false, only the run created with the session is allowed and its sandbox is deleted after completion, failure or cancellation. If true, the sandbox is paused for subsequent runs. Recovery and messages within the current run are allowed in either mode.
+                    description: Immutable session policy. If false, only the run created with the session is allowed and its sandbox is deleted after completion, failure or cancellation. If true, the sandbox is paused for subsequent runs until its retention period expires. Recovery and messages within the current run are allowed in either mode.
                     type: boolean
                     default: false
                 namespace:
@@ -966,6 +986,7 @@ components:
                     title: Created At
                     type: string
                 deadline_at:
+                    description: Fixed at the first dispatch. Protected services can shorten the configured execution timeout to leave the configured cancellation grace and worker polling interval before their earliest absolute credential deadline. Renewal and worker recovery do not extend it.
                     anyOf:
                         - format: date-time
                           type: string
@@ -1558,6 +1579,39 @@ info:
     version: 0.1.0
 openapi: 3.1.0
 paths:
+    /api/v1/service-access/confirm:
+        post:
+            operationId: confirmServiceAccess
+            summary: Confirm the saved source context before a protected service operation
+            tags: [sessions]
+            security:
+                - HTTPBearer: []
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            type: object
+                            additionalProperties: false
+                            required: [invocation_id]
+                            properties:
+                                invocation_id: {type: string, format: uuid}
+            responses:
+                '200':
+                    description: Source and audience remain confirmed for the active invocation
+                    content:
+                        application/json:
+                            schema:
+                                type: object
+                                additionalProperties: false
+                                required: [invocation_id]
+                                properties:
+                                    invocation_id: {type: string, format: uuid}
+                default:
+                    description: Current invocation context could not be confirmed
+                    content:
+                        application/json:
+                            schema: {$ref: '#/components/schemas/ErrorResponse'}
     /api/v1/profiles:
         get:
             operationId: get_profiles
@@ -2603,7 +2657,14 @@ paths:
                 - BrowserSession: []
             summary: List Runs
         post:
-            description: Create a subsequent run. Sessions created with allow_multiple_runs=false reject this operation with 409 multiple_runs_not_allowed, regardless of the first run or sandbox state. Idempotent replay of an accepted request returns the original acceptance.
+            description: >-
+                Create a subsequent run. Sessions created with allow_multiple_runs=false
+                reject this operation with 409 multiple_runs_not_allowed. Deleting,
+                deleted or unavailable environments reject new input with 409
+                session_unavailable; create a new session with the required context.
+                If external sandbox loss is discovered after acceptance, the run fails
+                asynchronously with sandbox_lost. Idempotent replay of an accepted
+                request returns the original acceptance, regardless of sandbox state.
             operationId: create_run
             parameters:
                 - in: path

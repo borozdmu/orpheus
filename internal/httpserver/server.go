@@ -304,7 +304,11 @@ func accessContext(in *api.AccessContext) *session.AccessContext {
 	if in == nil {
 		return nil
 	}
-	return &session.AccessContext{InvocationID: in.InvocationID, Subject: session.AccessSubject{Namespace: in.Subject.Namespace, ID: in.Subject.ID}, ScopeContext: in.ScopeContext, AllowedInputSubjects: convertSubjects(value(in.AllowedInputSubjects, nil)), ContextObservedAt: in.ContextObservedAt}
+	var source *session.SourceContext
+	if in.Source != nil {
+		source = &session.SourceContext{Identity: session.AccessSubject{Namespace: in.Source.Identity.Namespace, ID: in.Source.Identity.ID}, Revision: in.Source.Revision, Audience: convertSubjects(in.Source.Audience)}
+	}
+	return &session.AccessContext{Source: source, InvocationID: in.InvocationID, Subject: session.AccessSubject{Namespace: in.Subject.Namespace, ID: in.Subject.ID}, ScopeContext: in.ScopeContext, AllowedInputSubjects: convertSubjects(value(in.AllowedInputSubjects, nil)), ContextObservedAt: in.ContextObservedAt}
 }
 func inputSubjects(in *api.InputAccessContext) []session.AccessSubject {
 	if in == nil {

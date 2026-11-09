@@ -991,6 +991,9 @@ type AccessContext struct {
 	// ScopeContext Opaque JSON object interpreted only by the selected credentials provider. Its serialized JSON must not exceed 1 MiB. Orpheus does not derive input permissions from this object.
 	ScopeContext AccessScopeContext `json:"scope_context"`
 
+	// Source Exact source revision and complete result audience, including service principals. An explicit empty audience is valid for jobs without result readers. No transport-specific fields are required.
+	Source *SourceContext `json:"source,omitempty"`
+
 	// Subject A namespaced human or service principal, supplied by a trusted caller.
 	Subject AccessSubject `json:"subject"`
 }
@@ -1200,7 +1203,7 @@ type CreateSession struct {
 	// AccessContext Trusted caller snapshot for a new invocation. Never inferred from prompts or message metadata. Protected service scope changes return 409 service_scope_changed before execution.
 	AccessContext *AccessContext `json:"access_context,omitempty"`
 
-	// AllowMultipleRuns Immutable session policy. If false, only the run created with the session is allowed and its sandbox is deleted after completion, failure or cancellation. If true, the sandbox is paused for subsequent runs. Recovery and messages within the current run are allowed in either mode.
+	// AllowMultipleRuns Immutable session policy. If false, only the run created with the session is allowed and its sandbox is deleted after completion, failure or cancellation. If true, the sandbox is paused for subsequent runs until its retention period expires. Recovery and messages within the current run are allowed in either mode.
 	AllowMultipleRuns *bool              `json:"allow_multiple_runs,omitempty"`
 	Configuration     ConfigurationInput `json:"configuration"`
 
@@ -1462,7 +1465,9 @@ type Run struct {
 	AgentStatus       *RunAgentStatus `json:"agent_status"`
 	CancelRequestedAt *time.Time      `json:"cancel_requested_at"`
 	CreatedAt         time.Time       `json:"created_at"`
-	DeadlineAt        *time.Time      `json:"deadline_at"`
+
+	// DeadlineAt Fixed at the first dispatch. Protected services can shorten the configured execution timeout to leave the configured cancellation grace and worker polling interval before their earliest absolute credential deadline. Renewal and worker recovery do not extend it.
+	DeadlineAt *time.Time `json:"deadline_at"`
 
 	// EnvFrom Sorted orchestrator environment variable names for this run, including expanded services.
 	EnvFrom []string `json:"env_from"`
@@ -1645,6 +1650,15 @@ type SessionPage struct {
 	NextCursor *string   `json:"next_cursor"`
 }
 
+// SourceContext Exact source revision and complete result audience, including service principals. An explicit empty audience is valid for jobs without result readers. No transport-specific fields are required.
+type SourceContext struct {
+	Audience []AccessSubject `json:"audience"`
+
+	// Identity A namespaced human or service principal, supplied by a trusted caller.
+	Identity AccessSubject `json:"identity"`
+	Revision string        `json:"revision"`
+}
+
 // StatusCounts defines model for StatusCounts.
 type StatusCounts struct {
 	Accepted   int64 `json:"accepted"`
@@ -1806,6 +1820,11 @@ type ListAllRunsParams struct {
 // ListAllRunsParamsOrder defines parameters for ListAllRuns.
 type ListAllRunsParamsOrder string
 
+// ConfirmServiceAccessJSONBody defines parameters for ConfirmServiceAccess.
+type ConfirmServiceAccessJSONBody struct {
+	InvocationID openapi_types.UUID `json:"invocation_id"`
+}
+
 // ListSessionsParams defines parameters for ListSessions.
 type ListSessionsParams struct {
 	// Activity Whether the latest run is unfinished; combined with status using AND.
@@ -1887,6 +1906,9 @@ type SendMessageParams struct {
 type BrowserLoginParams struct {
 	Next *string `form:"next,omitempty" json:"next,omitempty"`
 }
+
+// ConfirmServiceAccessJSONRequestBody defines body for ConfirmServiceAccess for application/json ContentType.
+type ConfirmServiceAccessJSONRequestBody ConfirmServiceAccessJSONBody
 
 // CreateSessionJSONRequestBody defines body for CreateSession for application/json ContentType.
 type CreateSessionJSONRequestBody = CreateSession
@@ -2539,6 +2561,20 @@ type ClientInterface interface {
 	// Corresponds with GET /api/v1/runs (the `ListAllRuns` operationId).
 	ListAllRuns(ctx context.Context, params *ListAllRunsParams, reqEditors ...RequestEditorFn) (*http.Response, error)
 
+	// ConfirmServiceAccessWithBody Confirm the saved source context before a protected service operation
+	//
+	// Takes any type of body and a specified content type.
+	//
+	// Corresponds with POST /api/v1/service-access/confirm (the `ConfirmServiceAccess` operationId).
+	ConfirmServiceAccessWithBody(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// ConfirmServiceAccess Confirm the saved source context before a protected service operation
+	//
+	// Takes a body of the `application/json` content type.
+	//
+	// Corresponds with POST /api/v1/service-access/confirm (the `ConfirmServiceAccess` operationId).
+	ConfirmServiceAccess(ctx context.Context, body ConfirmServiceAccessJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
 	// GetServices List configured services
 	//
 	// Returns the complete catalog sorted by code from local configuration. No provider or credential lookups are performed.
@@ -2592,7 +2628,7 @@ type ClientInterface interface {
 
 	// CreateRunWithBody Create Run
 	//
-	// Create a subsequent run. Sessions created with allow_multiple_runs=false reject this operation with 409 multiple_runs_not_allowed, regardless of the first run or sandbox state. Idempotent replay of an accepted request returns the original acceptance.
+	// Create a subsequent run. Sessions created with allow_multiple_runs=false reject this operation with 409 multiple_runs_not_allowed. Deleting, deleted or unavailable environments reject new input with 409 session_unavailable; create a new session with the required context. If external sandbox loss is discovered after acceptance, the run fails asynchronously with sandbox_lost. Idempotent replay of an accepted request returns the original acceptance, regardless of sandbox state.
 	//
 	// Takes any type of body and a specified content type.
 	//
@@ -2601,7 +2637,7 @@ type ClientInterface interface {
 
 	// CreateRun Create Run
 	//
-	// Create a subsequent run. Sessions created with allow_multiple_runs=false reject this operation with 409 multiple_runs_not_allowed, regardless of the first run or sandbox state. Idempotent replay of an accepted request returns the original acceptance.
+	// Create a subsequent run. Sessions created with allow_multiple_runs=false reject this operation with 409 multiple_runs_not_allowed. Deleting, deleted or unavailable environments reject new input with 409 session_unavailable; create a new session with the required context. If external sandbox loss is discovered after acceptance, the run fails asynchronously with sandbox_lost. Idempotent replay of an accepted request returns the original acceptance, regardless of sandbox state.
 	//
 	// Takes a body of the `application/json` content type.
 	//
@@ -2739,6 +2775,40 @@ func (c *Client) GetProfiles(ctx context.Context, reqEditors ...RequestEditorFn)
 // Corresponds with GET /api/v1/runs (the `ListAllRuns` operationId).
 func (c *Client) ListAllRuns(ctx context.Context, params *ListAllRunsParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewListAllRunsRequest(c.Server, params)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// ConfirmServiceAccessWithBody Confirm the saved source context before a protected service operation
+//
+// Takes any type of body and a specified content type.
+//
+// Corresponds with POST /api/v1/service-access/confirm (the `ConfirmServiceAccess` operationId).
+func (c *Client) ConfirmServiceAccessWithBody(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewConfirmServiceAccessRequestWithBody(c.Server, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// ConfirmServiceAccess Confirm the saved source context before a protected service operation
+//
+// Takes a body of the `application/json` content type.
+//
+// Corresponds with POST /api/v1/service-access/confirm (the `ConfirmServiceAccess` operationId).
+func (c *Client) ConfirmServiceAccess(ctx context.Context, body ConfirmServiceAccessJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewConfirmServiceAccessRequest(c.Server, body)
 	if err != nil {
 		return nil, err
 	}
@@ -2892,7 +2962,7 @@ func (c *Client) ListRuns(ctx context.Context, sid openapi_types.UUID, params *L
 
 // CreateRunWithBody Create Run
 //
-// Create a subsequent run. Sessions created with allow_multiple_runs=false reject this operation with 409 multiple_runs_not_allowed, regardless of the first run or sandbox state. Idempotent replay of an accepted request returns the original acceptance.
+// Create a subsequent run. Sessions created with allow_multiple_runs=false reject this operation with 409 multiple_runs_not_allowed. Deleting, deleted or unavailable environments reject new input with 409 session_unavailable; create a new session with the required context. If external sandbox loss is discovered after acceptance, the run fails asynchronously with sandbox_lost. Idempotent replay of an accepted request returns the original acceptance, regardless of sandbox state.
 //
 // Takes any type of body and a specified content type.
 //
@@ -2911,7 +2981,7 @@ func (c *Client) CreateRunWithBody(ctx context.Context, sid openapi_types.UUID, 
 
 // CreateRun Create Run
 //
-// Create a subsequent run. Sessions created with allow_multiple_runs=false reject this operation with 409 multiple_runs_not_allowed, regardless of the first run or sandbox state. Idempotent replay of an accepted request returns the original acceptance.
+// Create a subsequent run. Sessions created with allow_multiple_runs=false reject this operation with 409 multiple_runs_not_allowed. Deleting, deleted or unavailable environments reject new input with 409 session_unavailable; create a new session with the required context. If external sandbox loss is discovered after acceptance, the run fails asynchronously with sandbox_lost. Idempotent replay of an accepted request returns the original acceptance, regardless of sandbox state.
 //
 // Takes a body of the `application/json` content type.
 //
@@ -3392,6 +3462,46 @@ func NewListAllRunsRequest(server string, params *ListAllRunsParams) (*http.Requ
 	if err != nil {
 		return nil, err
 	}
+
+	return req, nil
+}
+
+// NewConfirmServiceAccessRequest calls the generic ConfirmServiceAccess builder with application/json body
+func NewConfirmServiceAccessRequest(server string, body ConfirmServiceAccessJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewConfirmServiceAccessRequestWithBody(server, "application/json", bodyReader)
+}
+
+// NewConfirmServiceAccessRequestWithBody constructs an http.Request for the ConfirmServiceAccess method, with any body, and a specified content type
+func NewConfirmServiceAccessRequestWithBody(server string, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/v1/service-access/confirm")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodPost, queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
 
 	return req, nil
 }
@@ -4491,6 +4601,20 @@ type ClientWithResponsesInterface interface {
 	// Corresponds with GET /api/v1/runs (the `ListAllRuns` operationId).
 	ListAllRunsWithResponse(ctx context.Context, params *ListAllRunsParams, reqEditors ...RequestEditorFn) (*ListAllRunsHTTPResponse, error)
 
+	// ConfirmServiceAccessWithBodyWithResponse Confirm the saved source context before a protected service operation
+	//
+	// Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with POST /api/v1/service-access/confirm (the `ConfirmServiceAccess` operationId).
+	ConfirmServiceAccessWithBodyWithResponse(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*ConfirmServiceAccessHTTPResponse, error)
+
+	// ConfirmServiceAccessWithResponse Confirm the saved source context before a protected service operation
+	//
+	// Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with POST /api/v1/service-access/confirm (the `ConfirmServiceAccess` operationId).
+	ConfirmServiceAccessWithResponse(ctx context.Context, body ConfirmServiceAccessJSONRequestBody, reqEditors ...RequestEditorFn) (*ConfirmServiceAccessHTTPResponse, error)
+
 	// GetServicesWithResponse List configured services
 	//
 	// Returns the complete catalog sorted by code from local configuration. No provider or credential lookups are performed.
@@ -4558,7 +4682,7 @@ type ClientWithResponsesInterface interface {
 
 	// CreateRunWithBodyWithResponse Create Run
 	//
-	// Create a subsequent run. Sessions created with allow_multiple_runs=false reject this operation with 409 multiple_runs_not_allowed, regardless of the first run or sandbox state. Idempotent replay of an accepted request returns the original acceptance.
+	// Create a subsequent run. Sessions created with allow_multiple_runs=false reject this operation with 409 multiple_runs_not_allowed. Deleting, deleted or unavailable environments reject new input with 409 session_unavailable; create a new session with the required context. If external sandbox loss is discovered after acceptance, the run fails asynchronously with sandbox_lost. Idempotent replay of an accepted request returns the original acceptance, regardless of sandbox state.
 	//
 	// Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
 	//
@@ -4567,7 +4691,7 @@ type ClientWithResponsesInterface interface {
 
 	// CreateRunWithResponse Create Run
 	//
-	// Create a subsequent run. Sessions created with allow_multiple_runs=false reject this operation with 409 multiple_runs_not_allowed, regardless of the first run or sandbox state. Idempotent replay of an accepted request returns the original acceptance.
+	// Create a subsequent run. Sessions created with allow_multiple_runs=false reject this operation with 409 multiple_runs_not_allowed. Deleting, deleted or unavailable environments reject new input with 409 session_unavailable; create a new session with the required context. If external sandbox loss is discovered after acceptance, the run fails asynchronously with sandbox_lost. Idempotent replay of an accepted request returns the original acceptance, regardless of sandbox state.
 	//
 	// Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
 	//
@@ -4957,6 +5081,58 @@ func (r ListAllRunsHTTPResponse) StatusCode() int {
 
 // ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
 func (r ListAllRunsHTTPResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+type ConfirmServiceAccessHTTPResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	// JSON200 the response for an HTTP 200 `application/json` response
+	JSON200 *struct {
+		InvocationID openapi_types.UUID `json:"invocation_id"`
+	}
+	// JSONDefault the response for an HTTP default `application/json` response
+	JSONDefault *ErrorResponse
+}
+
+// GetJSON200 returns the response for an HTTP 200 `application/json` response
+func (r ConfirmServiceAccessHTTPResponse) GetJSON200() *struct {
+	InvocationID openapi_types.UUID `json:"invocation_id"`
+} {
+	return r.JSON200
+}
+
+// GetJSONDefault returns the response for an HTTP default `application/json` response
+func (r ConfirmServiceAccessHTTPResponse) GetJSONDefault() *ErrorResponse {
+	return r.JSONDefault
+}
+
+// GetBody returns the raw response body bytes
+func (r ConfirmServiceAccessHTTPResponse) GetBody() []byte {
+	return r.Body
+}
+
+// Status returns HTTPResponse.Status
+func (r ConfirmServiceAccessHTTPResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r ConfirmServiceAccessHTTPResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r ConfirmServiceAccessHTTPResponse) ContentType() string {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.Header.Get("Content-Type")
 	}
@@ -6440,6 +6616,32 @@ func (c *ClientWithResponses) ListAllRunsWithResponse(ctx context.Context, param
 	return ParseListAllRunsHTTPResponse(rsp)
 }
 
+// ConfirmServiceAccessWithBodyWithResponse Confirm the saved source context before a protected service operation
+//
+// Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
+//
+// Corresponds with POST /api/v1/service-access/confirm (the `ConfirmServiceAccess` operationId).
+func (c *ClientWithResponses) ConfirmServiceAccessWithBodyWithResponse(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*ConfirmServiceAccessHTTPResponse, error) {
+	rsp, err := c.ConfirmServiceAccessWithBody(ctx, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseConfirmServiceAccessHTTPResponse(rsp)
+}
+
+// ConfirmServiceAccessWithResponse Confirm the saved source context before a protected service operation
+//
+// Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
+//
+// Corresponds with POST /api/v1/service-access/confirm (the `ConfirmServiceAccess` operationId).
+func (c *ClientWithResponses) ConfirmServiceAccessWithResponse(ctx context.Context, body ConfirmServiceAccessJSONRequestBody, reqEditors ...RequestEditorFn) (*ConfirmServiceAccessHTTPResponse, error) {
+	rsp, err := c.ConfirmServiceAccess(ctx, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseConfirmServiceAccessHTTPResponse(rsp)
+}
+
 // GetServicesWithResponse List configured services
 //
 // Returns the complete catalog sorted by code from local configuration. No provider or credential lookups are performed.
@@ -6561,7 +6763,7 @@ func (c *ClientWithResponses) ListRunsWithResponse(ctx context.Context, sid open
 
 // CreateRunWithBodyWithResponse Create Run
 //
-// Create a subsequent run. Sessions created with allow_multiple_runs=false reject this operation with 409 multiple_runs_not_allowed, regardless of the first run or sandbox state. Idempotent replay of an accepted request returns the original acceptance.
+// Create a subsequent run. Sessions created with allow_multiple_runs=false reject this operation with 409 multiple_runs_not_allowed. Deleting, deleted or unavailable environments reject new input with 409 session_unavailable; create a new session with the required context. If external sandbox loss is discovered after acceptance, the run fails asynchronously with sandbox_lost. Idempotent replay of an accepted request returns the original acceptance, regardless of sandbox state.
 //
 // Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
 //
@@ -6576,7 +6778,7 @@ func (c *ClientWithResponses) CreateRunWithBodyWithResponse(ctx context.Context,
 
 // CreateRunWithResponse Create Run
 //
-// Create a subsequent run. Sessions created with allow_multiple_runs=false reject this operation with 409 multiple_runs_not_allowed, regardless of the first run or sandbox state. Idempotent replay of an accepted request returns the original acceptance.
+// Create a subsequent run. Sessions created with allow_multiple_runs=false reject this operation with 409 multiple_runs_not_allowed. Deleting, deleted or unavailable environments reject new input with 409 session_unavailable; create a new session with the required context. If external sandbox loss is discovered after acceptance, the run fails asynchronously with sandbox_lost. Idempotent replay of an accepted request returns the original acceptance, regardless of sandbox state.
 //
 // Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
 //
@@ -6950,6 +7152,41 @@ func ParseListAllRunsHTTPResponse(rsp *http.Response) (*ListAllRunsHTTPResponse,
 			return nil, err
 		}
 		response.JSON503 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseConfirmServiceAccessHTTPResponse parses an HTTP response from a ConfirmServiceAccessWithResponse call
+func ParseConfirmServiceAccessHTTPResponse(rsp *http.Response) (*ConfirmServiceAccessHTTPResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &ConfirmServiceAccessHTTPResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest struct {
+			InvocationID openapi_types.UUID `json:"invocation_id"`
+		}
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && true:
+		var dest ErrorResponse
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSONDefault = &dest
 
 	}
 

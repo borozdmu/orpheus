@@ -19,7 +19,16 @@ type AccessSubject struct {
 // its keys nor derives input permissions from it. Raw values preserve numbers.
 type AccessScopeContext = map[string]json.RawMessage
 
+// SourceContext names an exact source revision and its complete result audience.
+// Empty audience is explicit and valid for a service-only job with no readers.
+type SourceContext struct {
+	Identity AccessSubject   `json:"identity"`
+	Revision string          `json:"revision"`
+	Audience []AccessSubject `json:"audience"`
+}
+
 type AccessContext struct {
+	Source               *SourceContext     `json:"source,omitzero"`
 	InvocationID         uuid.UUID          `json:"invocation_id"`
 	Subject              AccessSubject      `json:"subject"`
 	ScopeContext         AccessScopeContext `json:"scope_context"`
@@ -43,6 +52,19 @@ func (a *AccessContext) Validate() error {
 	scope, err := json.Marshal(a.ScopeContext)
 	if err != nil || len(scope) > 1<<20 {
 		return Problem(422, "invalid_access_context", "Scope context must be a JSON object of at most 1 MiB.")
+	}
+	if a.Source != nil {
+		source := a.Source
+		if !validSubject(source.Identity) || !valid(source.Revision) || source.Audience == nil || len(source.Audience) > 4096 {
+			return Problem(422, "invalid_access_context", "Invalid source context or incomplete audience.")
+		}
+		readers := map[AccessSubject]bool{}
+		for _, reader := range source.Audience {
+			if !validSubject(reader) || readers[reader] {
+				return Problem(422, "invalid_access_context", "Invalid source audience.")
+			}
+			readers[reader] = true
+		}
 	}
 	seen := map[AccessSubject]bool{}
 	for _, subject := range a.AllowedInputSubjects {

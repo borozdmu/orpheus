@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"maps"
+	"reflect"
 	"slices"
 	"time"
 
@@ -19,6 +20,18 @@ import (
 func (s *Store) issueCredentials(ctx context.Context, a Admission) (servicecredentials.State, error) {
 	state := servicecredentials.State{Entries: map[string]servicecredentials.Entry{}}
 	if a.RunID != uuid.Nil {
+		saved, err := s.ServiceCredentials(ctx, a.SessionID, a.RunID)
+		if err != nil {
+			return state, err
+		}
+		for _, entry := range saved.Entries {
+			if entry.Config.Confirmation != nil {
+				if err = s.CredentialClient.Confirm(ctx, entry.Config, saved.Context); err != nil {
+					_, _ = s.Cancel(ctx, a.SessionID, a.RunID)
+					return state, err
+				}
+			}
+		}
 		return state, nil
 	}
 	var codes []string
@@ -35,7 +48,7 @@ func (s *Store) issueCredentials(ctx context.Context, a Admission) (servicecrede
 	}
 	for _, code := range a.Services {
 		if service := s.Profiles.Services[code]; service.Provider != nil {
-			return state, session.Problem(422, "invalid_service_scope", "File credentials must be selected in configuration.sandbox.services.")
+			return state, session.Problem(422, "invalid_service_scope", "Services with credentials must be selected in configuration.sandbox.services.")
 		}
 	}
 	paths := map[string]bool{}
@@ -103,7 +116,7 @@ func (s *Store) checkCredentials(ctx context.Context, tx pgx.Tx, record SessionR
 	if a.Create != nil {
 		return nil
 	}
-	last, err := db.New(tx).LatestRun(ctx, record.ID)
+	last, err := db.New(tx).LastSessionRun(ctx, record.ID)
 	if err != nil {
 		return err
 	}
@@ -114,11 +127,11 @@ func (s *Store) checkCredentials(ctx context.Context, tx pgx.Tx, record SessionR
 	compatibleProvider := true
 	for code, previous := range old.Entries {
 		next, ok := state.Entries[code]
-		if !ok || previous.Config.Endpoint != next.Config.Endpoint || previous.Config.SecretEnv != next.Config.SecretEnv || previous.Config.TokenFile != next.Config.TokenFile || !slices.Equal(slices.Sorted(slices.Values(previous.Config.ContextFields)), slices.Sorted(slices.Values(next.Config.ContextFields))) {
+		if !ok || previous.Config.MaxLeaseSeconds != next.Config.MaxLeaseSeconds || previous.Config.MaxRunSeconds != next.Config.MaxRunSeconds || !reflect.DeepEqual(previous.Config.Confirmation, next.Config.Confirmation) || previous.Config.Endpoint != next.Config.Endpoint || previous.Config.SecretEnv != next.Config.SecretEnv || previous.Config.TokenFile != next.Config.TokenFile || !slices.Equal(slices.Sorted(slices.Values(previous.Config.ContextFields)), slices.Sorted(slices.Values(next.Config.ContextFields))) {
 			compatibleProvider = false
 		}
 	}
-	if !compatibleProvider || !maps.Equal(old.Scopes(), state.Scopes()) {
+	if !compatibleProvider || !maps.Equal(old.Scopes(), state.Scopes()) || !sameSourceBoundary(old.Context.Source, state.Context.Source) {
 		return session.Problem(409, "service_scope_changed", "Service scope changed. Create a clean session using the same invocation.")
 	}
 	return nil
@@ -184,4 +197,88 @@ func (s *Store) SaveServiceCredentials(ctx context.Context, sid, rid uuid.UUID, 
 		}
 		return db.New(tx).UpdateServiceCredentials(ctx, db.UpdateServiceCredentialsParams{RunID: rid, Ciphertext: *token})
 	})
+}
+
+// RevokeTerminalCredentials is a durable cleanup pass, independent of sandbox
+// deletion/pause or the next run. Lost replies retry the same revoke request.
+func (s *Store) RevokeTerminalCredentials(ctx context.Context) error {
+	rows, err := db.New(s.Pool).PendingCredentialRevocations(ctx)
+	if err != nil {
+		return err
+	}
+	var failures []error
+	for _, row := range rows {
+		state, err := s.ServiceCredentials(ctx, row.SessionID, row.RunID)
+		if err != nil {
+			failures = append(failures, err)
+			continue
+		}
+		if err := db.New(s.Pool).MarkRevocationAttempt(ctx, row.RunID); err != nil {
+			failures = append(failures, err)
+			continue
+		}
+		var revokeErr error
+		for code, entry := range state.Entries {
+			call, cancel := context.WithTimeout(ctx, 5*time.Second)
+			err := s.CredentialClient.Revoke(call, entry.Config, code, state.Context.InvocationID, entry.Grant)
+			cancel()
+			revokeErr = errors.Join(revokeErr, err)
+		}
+		if revokeErr != nil {
+			failures = append(failures, revokeErr)
+			continue
+		}
+		failures = append(failures, db.New(s.Pool).MarkCredentialsRevoked(ctx, row.RunID))
+	}
+	return errors.Join(failures...)
+}
+
+// ConfirmInvocation rechecks only persisted authority for an active invocation.
+// It never accepts caller-supplied readers, source revisions, scopes or URLs.
+func (s *Store) ConfirmInvocation(ctx context.Context, invocation uuid.UUID) error {
+	denied := session.Problem(403, "audience_unconfirmed", "Current invocation context could not be confirmed.")
+	row, err := db.New(s.Pool).InvocationRun(ctx, invocation)
+	if err != nil || row.CancelRequestedAt != nil || row.Status == "completed" || row.Status == "failed" || row.Status == "cancelled" {
+		return denied
+	}
+	state, err := s.ServiceCredentials(ctx, row.SessionID, row.ID)
+	if err != nil || state.Expired(time.Now()) || state.Context.InvocationID != invocation {
+		return denied
+	}
+	confirmed := false
+	for _, entry := range state.Entries {
+		if entry.Config.Confirmation == nil {
+			continue
+		}
+		if err = s.CredentialClient.Confirm(ctx, entry.Config, state.Context); err != nil {
+			_, _ = s.Cancel(ctx, row.SessionID, row.ID)
+			return denied
+		}
+		confirmed = true
+	}
+	if !confirmed || state.Expired(time.Now()) {
+		return denied
+	}
+	current, err := db.New(s.Pool).InvocationRun(ctx, invocation)
+	if err != nil || current.CancelRequestedAt != nil || current.Status == "completed" || current.Status == "failed" || current.Status == "cancelled" {
+		return denied
+	}
+	return nil
+}
+
+// A new source or result audience must not inherit another source's messages or
+// sandbox files even if the provider computes an identical data scope.
+func sameSourceBoundary(a, b *session.SourceContext) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+	if a.Identity != b.Identity || len(a.Audience) != len(b.Audience) {
+		return false
+	}
+	for _, reader := range a.Audience {
+		if !slices.Contains(b.Audience, reader) {
+			return false
+		}
+	}
+	return true
 }

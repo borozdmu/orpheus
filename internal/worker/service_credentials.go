@@ -2,6 +2,7 @@ package worker
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"path"
 	"strings"
@@ -34,18 +35,37 @@ func (e *Executor) serviceCredentials(ctx context.Context, record store.SessionR
 	if state.Expired(time.Now()) {
 		return true, e.expireCredentials(ctx, record, run, state)
 	}
+	deadline := time.Time{}
+	for _, entry := range state.Entries {
+		if deadline.IsZero() || entry.Grant.ExpiresAt.Before(deadline) {
+			deadline = entry.Grant.ExpiresAt
+		}
+	}
+	calls, cancel := context.WithDeadline(ctx, deadline)
+	defer cancel()
 	if e.credentialsRetryAt == nil || e.credentialsInvocationID != state.Context.InvocationID {
 		e.credentialsRetryAt = map[string]time.Time{}
 		e.credentialsInvocationID = state.Context.InvocationID
 	}
 	changed := false
 	for code, entry := range state.Entries {
+		if entry.Config.Confirmation != nil && !time.Now().Before(e.credentialsRetryAt["audience:"+code]) {
+			if err := e.Store.CredentialClient.Confirm(calls, entry.Config, state.Context); err != nil {
+				return true, e.expireCredentials(ctx, record, run, state)
+			}
+			e.credentialsRetryAt["audience:"+code] = time.Now().Add(15 * time.Second)
+		}
+	}
+	for code, entry := range state.Entries {
 		if time.Until(entry.Grant.ExpiresAt) > 60*time.Second || entry.Grant.ExpiresAt.Equal(entry.Grant.RunExpiresAt) || time.Now().Before(e.credentialsRetryAt[code]) {
 			continue
 		}
 		e.credentialsRetryAt[code] = time.Now().Add(10 * time.Second)
-		grant, err := e.Store.CredentialClient.Renew(ctx, entry.Config, code, state.Context.InvocationID, entry.Grant)
+		grant, err := e.Store.CredentialClient.RenewConfirmed(calls, entry.Config, code, state.Context, entry.Grant)
 		if err != nil {
+			if entry.Config.Confirmation != nil {
+				return true, e.expireCredentials(ctx, record, run, state)
+			}
 			continue
 		} // Retain the original deadline; no permanent-key fallback.
 		entry.Grant = grant
@@ -65,7 +85,7 @@ func (e *Executor) serviceCredentials(ctx context.Context, record store.SessionR
 	}
 	if e.credentialsRunID != run.ID {
 		for _, entry := range state.Entries {
-			if err := e.installCredentialFile(ctx, entry); err != nil {
+			if err := e.installCredentialFile(ctx, run.ID, state.Context.InvocationID, entry); err != nil {
 				return false, err
 			}
 		}
@@ -73,13 +93,27 @@ func (e *Executor) serviceCredentials(ctx context.Context, record store.SessionR
 	}
 	return false, nil
 }
-func (e *Executor) installCredentialFile(ctx context.Context, entry servicecredentials.Entry) error {
-	if entry.Config.Validate() != nil {
+
+// credentialMetadata contains only the immutable deadline and opaque run IDs.
+// The short renewable lease remains enforced by the provider and worker.
+type credentialMetadata struct {
+	Schema       int       `json:"schema"`
+	RunID        uuid.UUID `json:"run_id"`
+	InvocationID uuid.UUID `json:"invocation_id"`
+	RunExpiresAt time.Time `json:"run_expires_at"`
+}
+
+func (e *Executor) installCredentialFile(ctx context.Context, runID, invocationID uuid.UUID, entry servicecredentials.Entry) error {
+	if entry.Config.Validate() != nil || runID == uuid.Nil || invocationID == uuid.Nil || entry.Grant.RunExpiresAt.IsZero() {
 		return harness.Failure("service_credentials_unavailable", "Invalid stored provider configuration.")
+	}
+	metadata, err := json.Marshal(credentialMetadata{Schema: 1, RunID: runID, InvocationID: invocationID, RunExpiresAt: entry.Grant.RunExpiresAt.UTC()})
+	if err != nil {
+		return err
 	}
 	relative := strings.TrimPrefix(entry.Config.TokenFile, "~/")
 	dir := path.Dir(relative)
-	command := `set -eu; umask 077; d="$HOME/` + dir + `"; test ! -L "$d"; mkdir -p "$d"; chmod 700 "$d"; mktemp "$d/.run.XXXXXXXX"`
+	command := `set -eu; umask 077; d="$HOME/` + dir + `"; test ! -L "$d"; mkdir -p "$d"; chmod 700 "$d"; mktemp -d "$d/.run.XXXXXXXX"`
 	raw, err := e.sandbox.Run(ctx, command)
 	if err != nil {
 		return err
@@ -91,12 +125,19 @@ func (e *Executor) installCredentialFile(ctx context.Context, entry servicecrede
 	defer func() {
 		cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 		defer cancel()
-		_, _ = e.sandbox.Run(cleanup, "rm -f -- "+harness.Quote(temporary))
+		_, _ = e.sandbox.Run(cleanup, "rm -f -- "+harness.Quote(path.Join(temporary, "run.token"))+" "+harness.Quote(path.Join(temporary, "run.json"))+"; rmdir -- "+harness.Quote(temporary))
 	}()
-	if err := e.sandbox.Write(ctx, temporary, []byte(entry.Grant.AccessToken)); err != nil {
+	tokenFile, metadataFile := path.Join(temporary, "run.token"), path.Join(temporary, "run.json")
+	if err := e.sandbox.Write(ctx, tokenFile, []byte(entry.Grant.AccessToken)); err != nil {
 		return err
 	}
-	_, err = e.sandbox.Run(ctx, "set -eu; chmod 600 "+harness.Quote(temporary)+"; mv -f -- "+harness.Quote(temporary)+" "+harness.Quote(path.Join(path.Dir(temporary), "run.token")))
+	if err := e.sandbox.Write(ctx, metadataFile, metadata); err != nil {
+		return err
+	}
+	// Publish the new metadata last. A partial replacement must not leave the
+	// previous run's deadline next to a new bearer; hooks/model have not started.
+	targetToken, targetMetadata := path.Join(path.Dir(temporary), "run.token"), path.Join(path.Dir(temporary), "run.json")
+	_, err = e.sandbox.Run(ctx, "set -eu; chmod 600 "+harness.Quote(tokenFile)+"; chmod 400 "+harness.Quote(metadataFile)+"; rm -f -- "+harness.Quote(targetMetadata)+"; mv -f -- "+harness.Quote(tokenFile)+" "+harness.Quote(targetToken)+"; mv -f -- "+harness.Quote(metadataFile)+" "+harness.Quote(targetMetadata))
 	return err
 }
 func (e *Executor) removeCredentialFiles(ctx context.Context, state servicecredentials.State) error {
@@ -105,7 +146,7 @@ func (e *Executor) removeCredentialFiles(ctx context.Context, state servicecrede
 			return errors.New("invalid stored credential target")
 		}
 		relative := strings.TrimPrefix(entry.Config.TokenFile, "~/")
-		if _, err := e.sandbox.Run(ctx, `set -eu; d="$HOME/`+path.Dir(relative)+`"; test ! -L "$d"; rm -f -- "$d/run.token"`); err != nil {
+		if _, err := e.sandbox.Run(ctx, `set -eu; d="$HOME/`+path.Dir(relative)+`"; test ! -L "$d"; rm -f -- "$d/run.json" "$d/run.token"`); err != nil {
 			return err
 		}
 	}
@@ -113,16 +154,16 @@ func (e *Executor) removeCredentialFiles(ctx context.Context, state servicecrede
 	return nil
 }
 func (e *Executor) expireCredentials(ctx context.Context, record store.SessionRecord, run store.RunRecord, state servicecredentials.State) error {
+	// Remove local access and stop execution even when the remote revoke is unavailable.
 	if record.SandboxID != nil {
 		if err := e.ensureSandbox(ctx, &record, &run); err != nil {
 			return err
 		}
-		if err := e.removeCredentialFiles(ctx, state); err != nil {
-			return err
-		}
+		removeErr := e.removeCredentialFiles(ctx, state)
 		// Pause also stops an in-flight hook. Do not resume unconfirmed model memory
 		// after an absolute deadline, even if a new grant would now be available.
-		if err := e.sandbox.Pause(ctx); err != nil {
+		pauseErr := e.sandbox.Pause(ctx)
+		if err := errors.Join(removeErr, pauseErr); err != nil {
 			return err
 		}
 	}

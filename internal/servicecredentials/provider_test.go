@@ -1,21 +1,65 @@
 package servicecredentials
 
 import (
+	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
 	"slices"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/orpheus-agents/orpheus/internal/session"
 )
 
+type delayedGrantTransport struct{ delay time.Duration }
+
+func (r delayedGrantTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	select {
+	case <-req.Context().Done():
+		return nil, req.Context().Err()
+	case <-time.After(r.delay):
+		body, err := json.Marshal(testGrant())
+		if err != nil {
+			return nil, err
+		}
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(string(body))), Request: req}, nil
+	}
+}
+
+func TestProviderProjectionDeadline(t *testing.T) {
+	t.Setenv("TEST_PROVIDER_KEY", strings.Repeat("k", 32))
+	for _, test := range []struct {
+		name                           string
+		delay, callerDeadline, elapsed time.Duration
+		wantError                      bool
+	}{
+		{"fresh projection", 31 * time.Second, 2 * time.Minute, 31 * time.Second, false},
+		{"provider deadline", 61 * time.Second, 2 * time.Minute, 60 * time.Second, true},
+		{"caller cancellation", 31 * time.Second, 2 * time.Second, 2 * time.Second, true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				ctx, cancel := context.WithTimeout(t.Context(), test.callerDeadline)
+				defer cancel()
+				client := Client{HTTP: &http.Client{Transport: delayedGrantTransport{test.delay}}}
+				started := time.Now()
+				_, err := client.Issue(ctx, testConfig("https://provider.invalid/credentials"), "kord", session.AccessContext{InvocationID: uuid.New()})
+				if (err != nil) != test.wantError || time.Since(started) != test.elapsed {
+					t.Fatalf("error=%v elapsed=%v, want error=%v elapsed=%v", err, time.Since(started), test.wantError, test.elapsed)
+				}
+			})
+		})
+	}
+}
+
 func testConfig(endpoint string) Config {
-	return Config{Endpoint: endpoint, SecretEnv: "TEST_PROVIDER_KEY", ContextFields: []string{"subject", "scope_context", "context_observed_at"}, TokenFile: "~/.kord/run.token"}
+	return Config{MaxLeaseSeconds: 300, MaxRunSeconds: 1200, Endpoint: endpoint, SecretEnv: "TEST_PROVIDER_KEY", ContextFields: []string{"subject", "scope_context", "context_observed_at"}, TokenFile: "~/.kord/run.token"}
 }
 func testGrant() Grant {
 	now := time.Now().UTC()
@@ -95,7 +139,7 @@ func TestIssueHonorsEveryConfiguredProjectionSubset(t *testing.T) {
 	for mask := range 8 {
 		cfg := testConfig(server.URL)
 		cfg.ContextFields = nil
-		for i, field := range projection {
+		for i, field := range projection[:3] {
 			if mask&(1<<i) != 0 {
 				cfg.ContextFields = append(cfg.ContextFields, field)
 			}
@@ -219,8 +263,8 @@ func TestProviderClockSkewLimits(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			g := Grant{ExpiresAt: now.Add(test.lease), RunExpiresAt: now.Add(test.deadline)}
-			if g.validLifetime(now) != test.valid {
-				t.Fatalf("validLifetime = %v, want %v", g.validLifetime(now), test.valid)
+			if g.validLifetime(now, Config{MaxLeaseSeconds: 300, MaxRunSeconds: 1200}) != test.valid {
+				t.Fatalf("validLifetime = %v, want %v", g.validLifetime(now, Config{MaxLeaseSeconds: 300, MaxRunSeconds: 1200}), test.valid)
 			}
 			state := State{Entries: map[string]Entry{"kord": {Grant: g}}}
 			if !state.Expired(g.ExpiresAt) || !state.Expired(g.RunExpiresAt) {
@@ -250,5 +294,21 @@ func TestIssueAndRenewPreserveProviderTimestampsWithClockSkew(t *testing.T) {
 	renewed, err := c.Renew(t.Context(), cfg, "kord", access.InvocationID, issued)
 	if err != nil || renewed != grant {
 		t.Fatal("renew changed or rejected provider timestamps", err)
+	}
+}
+
+func TestProviderLifetimeBoundsArePerService(t *testing.T) {
+	now := time.Now()
+	g := Grant{ExpiresAt: now.Add(time.Hour), RunExpiresAt: now.Add(24 * time.Hour)}
+	if !g.validLifetime(now, Config{}) {
+		t.Fatal("pilot lifetime imposed on every provider")
+	}
+	if g.validLifetime(now, Config{MaxLeaseSeconds: 300, MaxRunSeconds: 1200}) {
+		t.Fatal("configured bounds ignored")
+	}
+	cfg := testConfig("https://provider.invalid")
+	cfg.MaxLeaseSeconds = -1
+	if cfg.Validate() == nil {
+		t.Fatal("negative lifetime bound accepted")
 	}
 }

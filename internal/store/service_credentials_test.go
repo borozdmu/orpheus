@@ -286,3 +286,62 @@ func TestProtectedProviderProjectionCompatibility(t *testing.T) {
 	_, err = s.Accept(t.Context(), admission)
 	requireCode(t, err, "service_scope_changed")
 }
+
+func TestRevocationRetriesAfterWorkerRestoration(t *testing.T) {
+	s, req, _, _, _ := protectedFixture(t)
+	var unavailable atomic.Bool
+	unavailable.Store(true)
+	var ids []string
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var in struct {
+			Operation string `json:"operation"`
+			RequestID string `json:"request_id"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&in)
+		if in.Operation == "revoke" {
+			ids = append(ids, in.RequestID)
+			if unavailable.Load() {
+				w.WriteHeader(503)
+				return
+			}
+			_, _ = w.Write([]byte(`{"revoked":true}`))
+			return
+		}
+		now := time.Now().UTC()
+		_ = json.NewEncoder(w).Encode(servicecredentials.Grant{CredentialID: "saved-grant", AccessToken: "private", ScopeKey: "scope", ExpiresAt: now.Add(4 * time.Minute), RunExpiresAt: now.Add(15 * time.Minute)})
+	}))
+	defer server.Close()
+	cfg := s.Profiles.Services["kord"].Provider
+	cfg.Endpoint = server.URL
+	s.CredentialClient = servicecredentials.Client{HTTP: server.Client()}
+	accepted, err := s.Accept(t.Context(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = s.RevokeTerminalCredentials(t.Context()); err != nil || len(ids) != 0 {
+		t.Fatal("active grant revoked", err)
+	}
+	if _, err = s.Cancel(t.Context(), accepted.SessionID, accepted.RunID); err != nil {
+		t.Fatal(err)
+	}
+	if err = s.RevokeTerminalCredentials(t.Context()); err == nil {
+		t.Fatal("lost revoke marked complete")
+	}
+	rows, err := db.New(s.Pool).PendingCredentialRevocations(t.Context())
+	if err != nil || len(rows) != 1 {
+		t.Fatal("cleanup obligation lost", err)
+	}
+	// New Store simulates a new process, with no in-memory retry state/catalog.
+	restored := &Store{Pool: s.Pool, Cipher: s.Cipher, CredentialClient: servicecredentials.Client{HTTP: server.Client()}}
+	unavailable.Store(false)
+	if err = restored.RevokeTerminalCredentials(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if err = restored.RevokeTerminalCredentials(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	rows, err = db.New(s.Pool).PendingCredentialRevocations(t.Context())
+	if err != nil || len(rows) != 0 || len(ids) != 2 || ids[0] != ids[1] {
+		t.Fatal("revocation not durably confirmed", err, ids)
+	}
+}

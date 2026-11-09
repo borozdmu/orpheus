@@ -110,3 +110,21 @@ func TestAccessContextInputAuthorityIsExplicitAndNamespaced(t *testing.T) {
 		t.Fatal("missing context grants authority")
 	}
 }
+
+func TestSourceContextHasNoMandatoryHumanOrTransport(t *testing.T) {
+	for _, namespace := range []string{"gitlab", "space", "helpdesk", "telegram"} {
+		a := validAccessContext()
+		a.Source = &SourceContext{Identity: AccessSubject{Namespace: namespace, ID: "object"}, Revision: "revision", Audience: []AccessSubject{}}
+		if err := a.Validate(); err != nil {
+			t.Fatal(namespace, err)
+		}
+		a.Source.Audience = nil
+		if a.Validate() == nil {
+			t.Fatal("unknown audience accepted")
+		}
+		a.Source.Audience = []AccessSubject{{Namespace: "service", ID: "reader"}, {Namespace: "service", ID: "reader"}}
+		if a.Validate() == nil {
+			t.Fatal("duplicate reader accepted")
+		}
+	}
+}

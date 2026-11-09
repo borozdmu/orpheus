@@ -358,7 +358,7 @@ func Resolve(in session.ConfigurationInput, p Profiles, allowlist []string, defa
 		return out, invalid("Invalid session token budget.", "configuration", "limits", "max_session_tokens")
 	}
 	for _, service := range p.Services {
-		if service.Provider != nil && service.Provider.SecretEnv == profile.Auth.APIKeyEnv {
+		if service.Provider != nil && (service.Provider.SecretEnv == profile.Auth.APIKeyEnv || (service.Provider.Confirmation != nil && service.Provider.Confirmation.SecretEnv == profile.Auth.APIKeyEnv)) {
 			return out, invalid("Provider server secret cannot be used as model credentials.", "configuration", "agent", "profile")
 		}
 	}
@@ -417,26 +417,29 @@ func MergedEnvironment(cipher *secret.Cipher, id uuid.UUID, token *string, cfg s
 const DefaultMaxSessionTokens int64 = 100_000_000
 
 type Settings struct {
-	BrowserAuth             BrowserAuth
-	DefaultMaxSessionTokens int64
-	DatabaseURL             string
-	ConfigFile              string
-	PublicAPIKeys           []string
-	EnvEncryptionKey        string
-	HarnessEnvAllowlist     []string
-	SandboxProxyURL         string
-	MaxConcurrentSessions   int
-	MaxToolResultBytes      int
-	MaxHookOutputBytes      int
-	MaxRequestBytes         int64
-	DatabasePingTimeout     time.Duration
-	CancelGrace             time.Duration
-	WorkerPoll              time.Duration
-	RPCTimeout              time.Duration
+	BrowserAuth                BrowserAuth
+	DefaultMaxSessionTokens    int64
+	DatabaseURL                string
+	ConfigFile                 string
+	PublicAPIKeys              []string
+	EnvEncryptionKey           string
+	HarnessEnvAllowlist        []string
+	SandboxProxyURL            string
+	MaxConcurrentSessions      int
+	MaxToolResultBytes         int
+	MaxHookOutputBytes         int
+	MaxRequestBytes            int64
+	DatabasePingTimeout        time.Duration
+	CancelGrace                time.Duration
+	WorkerPoll                 time.Duration
+	RPCTimeout                 time.Duration
+	SandboxProvisionTimeout    time.Duration
+	SandboxPausedRetentionDays int
+	SandboxCleanupBatchSize    int
 }
 
 func DefaultSettings() Settings {
-	return Settings{BrowserAuth: BrowserAuth{Mode: "api_only", SessionTTL: 12 * time.Hour}, DefaultMaxSessionTokens: DefaultMaxSessionTokens, ConfigFile: "orpheus.toml", SandboxProxyURL: "https://sandbox-proxy.agentbox.ru:65181", MaxConcurrentSessions: 50, MaxToolResultBytes: 524288, MaxHookOutputBytes: 524288, MaxRequestBytes: 1048576, DatabasePingTimeout: 2 * time.Second, CancelGrace: 30 * time.Second, WorkerPoll: time.Second, RPCTimeout: 30 * time.Second}
+	return Settings{BrowserAuth: BrowserAuth{Mode: "api_only", SessionTTL: 12 * time.Hour}, DefaultMaxSessionTokens: DefaultMaxSessionTokens, ConfigFile: "orpheus.toml", SandboxProxyURL: "https://sandbox-proxy.agentbox.ru:65181", MaxConcurrentSessions: 50, MaxToolResultBytes: 524288, MaxHookOutputBytes: 524288, MaxRequestBytes: 1048576, DatabasePingTimeout: 2 * time.Second, CancelGrace: 30 * time.Second, WorkerPoll: time.Second, RPCTimeout: 30 * time.Second, SandboxProvisionTimeout: 120 * time.Second, SandboxPausedRetentionDays: 14, SandboxCleanupBatchSize: 1000}
 }
 
 // AddSandboxProxy applies the sandbox egress proxy to an agent process environment.
@@ -444,8 +447,14 @@ func AddSandboxProxy(env map[string]string, proxy string) {
 	if proxy == "" {
 		return
 	}
-	env["HTTPS_PROXY"] = proxy
-	env["HTTP_PROXY"] = proxy
+	scheme, _, _ := strings.Cut(proxy, ":")
+	switch strings.ToLower(scheme) {
+	case "socks5", "socks5h":
+		env["ALL_PROXY"] = proxy
+	default:
+		env["HTTPS_PROXY"] = proxy
+		env["HTTP_PROXY"] = proxy
+	}
 	env["NO_PROXY"] = "localhost,127.0.0.1"
 }
 func Load() (Settings, error) {
@@ -457,8 +466,8 @@ func Load() (Settings, error) {
 	}
 	if s.SandboxProxyURL != "" {
 		proxy, err := url.Parse(s.SandboxProxyURL)
-		if err != nil || (proxy.Scheme != "http" && proxy.Scheme != "https") || proxy.Host == "" {
-			return s, errors.New("SANDBOX_PROXY_URL must be an HTTP or HTTPS proxy URL")
+		if err != nil || !slices.Contains([]string{"http", "https", "socks5", "socks5h"}, proxy.Scheme) || proxy.Hostname() == "" {
+			return s, errors.New("SANDBOX_PROXY_URL must be an HTTP, HTTPS, SOCKS5 or SOCKS5H proxy URL with a host")
 		}
 	}
 	s.BrowserAuth.ttlSeconds = os.Getenv("BROWSER_SESSION_TTL_SECONDS")
@@ -480,10 +489,10 @@ func Load() (Settings, error) {
 			}
 		}
 	}
-	for name, dest := range map[string]*int{"MAX_CONCURRENT_SESSIONS": &s.MaxConcurrentSessions, "MAX_TOOL_RESULT_BYTES": &s.MaxToolResultBytes, "MAX_HOOK_OUTPUT_BYTES": &s.MaxHookOutputBytes} {
+	for name, dest := range map[string]*int{"SANDBOX_PAUSED_RETENTION_DAYS": &s.SandboxPausedRetentionDays, "SANDBOX_CLEANUP_BATCH_SIZE": &s.SandboxCleanupBatchSize, "MAX_CONCURRENT_SESSIONS": &s.MaxConcurrentSessions, "MAX_TOOL_RESULT_BYTES": &s.MaxToolResultBytes, "MAX_HOOK_OUTPUT_BYTES": &s.MaxHookOutputBytes} {
 		if v, ok := os.LookupEnv(name); ok {
 			n, err := strconv.Atoi(v)
-			if err != nil || n <= 0 || (name == "MAX_HOOK_OUTPUT_BYTES" && n < 2) {
+			if err != nil || n <= 0 || (name == "SANDBOX_PAUSED_RETENTION_DAYS" && n > 100) || (name == "SANDBOX_CLEANUP_BATCH_SIZE" && n > 2147483647) || (name == "MAX_HOOK_OUTPUT_BYTES" && n < 2) {
 				return s, fmt.Errorf("invalid %s", name)
 			}
 			*dest = n
@@ -506,7 +515,7 @@ func Load() (Settings, error) {
 	if s.MaxToolResultBytes < 2 {
 		return s, errors.New("MAX_TOOL_RESULT_BYTES must be at least 2")
 	}
-	for name, dest := range map[string]*time.Duration{"DATABASE_PING_TIMEOUT": &s.DatabasePingTimeout, "CANCEL_GRACE_SECONDS": &s.CancelGrace, "WORKER_POLL_SECONDS": &s.WorkerPoll, "RPC_TIMEOUT_SECONDS": &s.RPCTimeout} {
+	for name, dest := range map[string]*time.Duration{"DATABASE_PING_TIMEOUT": &s.DatabasePingTimeout, "CANCEL_GRACE_SECONDS": &s.CancelGrace, "WORKER_POLL_SECONDS": &s.WorkerPoll, "RPC_TIMEOUT_SECONDS": &s.RPCTimeout, "SANDBOX_PROVISION_TIMEOUT_SECONDS": &s.SandboxProvisionTimeout} {
 		if v, ok := os.LookupEnv(name); ok {
 			d, err := time.ParseDuration(v + "s")
 			if err != nil || d <= 0 {
