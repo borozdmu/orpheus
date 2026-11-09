@@ -17,14 +17,20 @@ type Service struct {
 	Name        string                     `toml:"name"`
 	Description string                     `toml:"description"`
 	EnvFrom     []string                   `toml:"env_from"`
+	BeforeRun   *string                    `toml:"before_run"`
 }
 
 func validateServices(services map[string]Service) error {
 	for code, service := range services {
 		service.Name = strings.TrimSpace(service.Name)
 		service.Description = strings.TrimSpace(service.Description)
-		if !serviceCode.MatchString(code) || service.Name == "" || service.Description == "" || (len(service.EnvFrom) == 0 && service.Provider == nil) {
-			return fmt.Errorf("invalid service %q: code, name, description and environment references are required", code)
+		if !serviceCode.MatchString(code) || service.Name == "" || service.Description == "" || (len(service.EnvFrom) == 0 && service.Provider == nil && service.BeforeRun == nil) {
+			return fmt.Errorf("invalid service %q: code, name, description and environment references, provider or before_run are required", code)
+		}
+		if service.BeforeRun != nil {
+			if err := validateServiceBeforeRun(*service.BeforeRun); err != nil {
+				return fmt.Errorf("invalid service %q before_run: %w", code, err)
+			}
 		}
 		if err := validateEnvironment(nil, service.EnvFrom, nil); err != nil {
 			return fmt.Errorf("invalid service %q environment references", code)
