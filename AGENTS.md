@@ -13,6 +13,7 @@ Read [README.md](README.md).
 * Suggest best practices, even if they may require refactoring.
 
 # Development workflow
+* Before releasing, wait for this project's exact SHA in `latest-verified/latest.json`; see [README.md: Release compatibility](README.md#release-compatibility).
 * Always write a comprehensive test suite covering the implementation alongside the implementation itself.
 * API-first workflow: spec, `make generate`, implementation, tests.
 * Run `make fix gofix check` after completing the implementation.

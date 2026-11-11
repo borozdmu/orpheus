@@ -111,6 +111,18 @@ registry upload is unnecessary. Generation happens before committing; CI rejects
 stale output instead of silently generating a different release.
 [Go module publishing](https://go.dev/doc/modules/publishing).
 
+## Release compatibility
+
+After merging into `main`, wait for this project's exact SHA to appear in the
+[latest verified manifest](https://github.com/borozdmu/ai-agents-releases-ci/blob/latest-verified/latest.json)
+before releasing. If it is absent, inspect the
+[`cross-repository.yml` run history](https://github.com/borozdmu/ai-agents-releases-ci/actions/workflows/cross-repository.yml)
+for pending product CI or cross-repository failures. To run it manually, select
+**Run workflow** on `main` with `latest: true`; add `force: true` to retry after a
+failure. A previous success does not verify a new SHA. This checks compatibility
+and installs nothing on the server; installation is a separate step requiring
+separate approval.
+
 ## Service access
 
 Define named groups of worker ENV names in `orpheus.toml`:
