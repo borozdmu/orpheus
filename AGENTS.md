@@ -1,5 +1,14 @@
 # AGENTS.md
 
+## Task branches and shared CI
+
+1. Before starting or resuming a task, check the repository (`git remote -v`), local changes (`git status -sb`), and worktrees (`git worktree list`). Run `git fetch --prune origin` against the team's fork. If the fetch fails, restore access to the current `origin/main` before proceeding.
+2. Look for an open PR and a local or remote branch for this task. Continue in its existing worktree and compare it with its remote branch and the fetched `origin/main`. If main has advanced, review and integrate its changes while preserving collaborators' commits and uncommitted work.
+3. For a new independent task, create one branch from the fetched `origin/main` (for example, `git switch -c codex/<task> origin/main` in a clean checkout). When working with a local `main`, update it using `git merge --ff-only origin/main`. Read-only work needs no branch.
+4. Fetch main again before merging. Review the diff and required checks for the final PR revision. After merge, clean up only this task's branch and clean worktree once the changes are included and no one is using them.
+
+After merging to main, shared CI runs automatically. Before releasing a verified set, match the intended product commit to its entry in the [verified manifest](https://github.com/borozdmu/ai-agents-releases-ci/blob/latest-verified/latest.json).
+
 Read [README.md](README.md).
 
 # Environment
