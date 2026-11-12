@@ -9,6 +9,8 @@ The first release containing this package must be newer than `v0.1.0`.
 `../api/oapi-client.yaml`. Do not edit it manually. The generator version is pinned
 in the root `go.mod`; consumers use the committed code without running a generator.
 
+Chat connectors use the `client/modelcommand` package to match a model and effort against the workflow’s profile catalog and format the command reply. Each connector authenticates the caller and persists the selected profile for its chat.
+
 ## Requests and responses
 
 ```go
