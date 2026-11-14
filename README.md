@@ -46,6 +46,9 @@ For profile settings, template registration and catalog APIs, see
 [profiles and templates](docs/profiles-and-templates.md).
 For the experimental temporary service credentials provider, see
 [service credentials](docs/service-credentials.md).
+Provider requests allow up to one minute for a fresh access projection. Earlier
+caller cancellation still ends the request; the timeout does not extend a
+credential's lifetime or retry an uncertain issue operation.
 For provider quota snapshots by account, see [account limits](docs/account-limits.md).
 For database-backed Prometheus metrics on the internal system listener, see
 [service metrics](docs/service-metrics.md).

@@ -167,3 +167,19 @@ func TestServiceMetricsConcurrentSnapshots(t *testing.T) {
 		t.Fatal("extra reads", calls.Load())
 	}
 }
+
+func TestInputMaskerCredentialMetric(t *testing.T) {
+	for _, available := range []bool{false, true} {
+		m := serviceMetrics{report: store.LimitReport{InputMaskerSecretAvailable: &available}}
+		registry := prometheus.NewPedanticRegistry()
+		registry.MustRegister(m)
+		value := 0
+		if available {
+			value = 1
+		}
+		want := fmt.Sprintf("# HELP orpheus_input_masker_secret_available Configured input masker credential is readable and valid; does not probe service reachability. Absent when masking is not configured.\n# TYPE orpheus_input_masker_secret_available gauge\norpheus_input_masker_secret_available %d\n", value)
+		if err := testutil.GatherAndCompare(registry, strings.NewReader(want)); err != nil {
+			t.Fatal(err)
+		}
+	}
+}

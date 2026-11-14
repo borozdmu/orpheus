@@ -25,9 +25,13 @@ func (s *Store) issueCredentials(ctx context.Context, a Admission) (servicecrede
 	if a.Create != nil {
 		codes = a.Create.Configuration.Sandbox.Services
 	} else {
-		record, err := GetSession(ctx, s.Pool, a.SessionID, false)
-		if err != nil {
-			return state, err
+		record := a.policySession
+		if record == nil {
+			loaded, err := GetSession(ctx, s.Pool, a.SessionID, false)
+			if err != nil {
+				return state, err
+			}
+			record = &loaded
 		}
 		for _, service := range record.Configuration.Public.Sandbox.Services {
 			codes = append(codes, service.Code)

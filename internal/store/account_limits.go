@@ -31,6 +31,8 @@ type LimitReport struct {
 	AsOf              time.Time
 	StaleAfterSeconds int
 	Items             []LimitItem
+	// Credential validity only; no external request is made during a scrape.
+	InputMaskerSecretAvailable *bool
 }
 
 func accountLimitsUnavailable() error {
@@ -63,6 +65,10 @@ func (s *Store) SaveAccountLimitObservation(ctx context.Context, id, fingerprint
 
 func (s *Store) AccountLimits(ctx context.Context) (LimitReport, error) {
 	out := LimitReport{StaleAfterSeconds: accountLimitsStaleAfter, Items: []LimitItem{}}
+	if s.Profiles.InputMasker.URL != "" {
+		_, err := s.Profiles.InputMasker.Token()
+		out.InputMaskerSecretAvailable = new(err == nil)
+	}
 	requestCtx := ctx
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()

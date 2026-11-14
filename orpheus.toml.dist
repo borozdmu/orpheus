@@ -1,4 +1,13 @@
 # Register every AgentBox template that new sessions may select.
+# Optional trusted-side masker; also set mask_input = true inside a selected
+# [profiles.<name>] section. Existing sessions keep their creation-time policy.
+# [input_masker]
+# url = "http://127.0.0.1:3101"
+# timeout_seconds = 30
+# Optional access credential: choose one source, never an inline token.
+# token_env = "MASKER_ACCESS_TOKEN"
+# token_file = "/run/secrets/masker_access_token"
+
 [templates.orpheus-codex]
 description = "Codex sandbox"
 
