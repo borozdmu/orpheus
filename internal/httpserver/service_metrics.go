@@ -13,11 +13,12 @@ import (
 )
 
 var (
-	limitRemaining = prometheus.NewDesc("orpheus_account_limit_remaining_percent", "Last observed remaining quota percentage; use with account freshness.", []string{"account_id", "limit_id", "window"}, nil)
-	limitState     = prometheus.NewDesc("orpheus_account_limit_state", "Account observation state: exactly one state is 1.", []string{"account_id", "state"}, nil)
-	limitObserved  = prometheus.NewDesc("orpheus_account_limit_observed_timestamp_seconds", "Unix timestamp of the last successful account observation.", []string{"account_id"}, nil)
-	limitReset     = prometheus.NewDesc("orpheus_account_limit_reset_timestamp_seconds", "Last observed Unix timestamp of the next quota window reset.", []string{"account_id", "limit_id", "window"}, nil)
-	resetCredits   = prometheus.NewDesc("orpheus_account_reset_credits_available", "Last observed available earned resets; absent when unknown. Use with account freshness.", []string{"account_id"}, nil)
+	inputMaskerSecret = prometheus.NewDesc("orpheus_input_masker_secret_available", "Configured input masker credential is readable and valid; does not probe service reachability. Absent when masking is not configured.", nil, nil)
+	limitRemaining    = prometheus.NewDesc("orpheus_account_limit_remaining_percent", "Last observed remaining quota percentage; use with account freshness.", []string{"account_id", "limit_id", "window"}, nil)
+	limitState        = prometheus.NewDesc("orpheus_account_limit_state", "Account observation state: exactly one state is 1.", []string{"account_id", "state"}, nil)
+	limitObserved     = prometheus.NewDesc("orpheus_account_limit_observed_timestamp_seconds", "Unix timestamp of the last successful account observation.", []string{"account_id"}, nil)
+	limitReset        = prometheus.NewDesc("orpheus_account_limit_reset_timestamp_seconds", "Last observed Unix timestamp of the next quota window reset.", []string{"account_id", "limit_id", "window"}, nil)
+	resetCredits      = prometheus.NewDesc("orpheus_account_reset_credits_available", "Last observed available earned resets; absent when unknown. Use with account freshness.", []string{"account_id"}, nil)
 )
 
 // serviceMetrics owns a single read-only database snapshot for one scrape.
@@ -27,12 +28,19 @@ type serviceMetrics struct {
 }
 
 func (m serviceMetrics) Describe(ch chan<- *prometheus.Desc) {
-	for _, desc := range []*prometheus.Desc{limitRemaining, limitState, limitObserved, limitReset, resetCredits} {
+	for _, desc := range []*prometheus.Desc{limitRemaining, limitState, limitObserved, limitReset, resetCredits, inputMaskerSecret} {
 		ch <- desc
 	}
 }
 
 func (m serviceMetrics) Collect(ch chan<- prometheus.Metric) {
+	if available := m.report.InputMaskerSecretAvailable; available != nil {
+		value := 0.0
+		if *available {
+			value = 1
+		}
+		ch <- prometheus.MustNewConstMetric(inputMaskerSecret, prometheus.GaugeValue, value)
+	}
 	for _, item := range m.report.Items {
 		for _, state := range []string{"fresh", "stale", "unknown", "unavailable"} {
 			value := 0.0
