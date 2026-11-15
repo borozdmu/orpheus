@@ -25,12 +25,20 @@ func browserReadable(operation string) bool {
 		return false
 	}
 }
-func authorize(r *http.Request, auth *browserauth.Service, keys []string, operation string) (*browserauth.Identity, error) {
+func authorize(r *http.Request, auth *browserauth.Service, keys, readOnlyKeys []string, operation string) (*browserauth.Identity, error) {
 	unauthorized := session.Problem(401, "unauthorized", "A valid credential is required.")
 	if _, present := r.Header["Authorization"]; present {
 		scheme, token, ok := strings.Cut(r.Header.Get("Authorization"), " ")
 		authorized := 0
 		if ok && strings.EqualFold(scheme, "Bearer") && token != "" && len(r.Header.Values("Authorization")) == 1 {
+			for _, key := range readOnlyKeys {
+				if subtle.ConstantTimeCompare([]byte(token), []byte(key)) == 1 {
+					if !browserReadable(operation) {
+						return nil, session.Problem(403, "read_only_access", "This key permits reading only.")
+					}
+					return nil, nil
+				}
+			}
 			for _, key := range keys {
 				authorized |= subtle.ConstantTimeCompare([]byte(token), []byte(key))
 			}

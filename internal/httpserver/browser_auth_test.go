@@ -36,6 +36,7 @@ func TestBrowserAccessMatrix(t *testing.T) {
 	}
 	for _, mode := range []string{"api_only", "anonymous", "saml"} {
 		t.Run(mode, func(t *testing.T) {
+			storage.Settings.ReadOnlyAPIKeys = []string{"portal-reader"}
 			storage.Settings.BrowserAuth = fixture.Config
 			storage.Settings.BrowserAuth.Mode = mode
 			handler, err := Handler(storage, t.Context())
@@ -47,6 +48,8 @@ func TestBrowserAccessMatrix(t *testing.T) {
 				hasAuth                          bool
 				want                             int
 			}{
+				{name: "portal read", method: "GET", path: "/api/v1/sessions", auth: "Bearer portal-reader", hasAuth: true, want: 200},
+				{name: "portal write", method: "POST", path: "/api/v1/sessions", auth: "Bearer portal-reader", hasAuth: true, want: 403},
 				{name: "public state ignores bearer", method: "GET", path: "/api/v1/auth/session", auth: "broken", hasAuth: true, want: 200},
 				{name: "bearer write with cookie", method: "POST", path: "/api/v1/sessions", auth: "Bearer key", hasAuth: true, cookie: token, want: 422},
 				{name: "bearer read", method: "GET", path: "/api/v1/sessions", auth: "Bearer key", hasAuth: true, want: 200},

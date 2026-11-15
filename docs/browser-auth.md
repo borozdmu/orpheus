@@ -126,3 +126,5 @@ The Keycloak test uses fixture-only credentials on the internal Compose network;
 no host ports, real users, frontend, nginx or production identity settings are
 required. See [Keycloak SAML clients](https://www.keycloak.org/docs/latest/server_admin/index.html#saml-clients)
 and [running Keycloak in containers](https://www.keycloak.org/server/containers).
+
+In shared mode, an agent can have additional `read_only_api_keys` in its private tenant settings. Each key routes to that agent and permits only the same API operations as a read-only browser session. Use a distinct key for each agent and keep it on the portal server.

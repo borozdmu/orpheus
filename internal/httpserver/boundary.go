@@ -87,7 +87,7 @@ func Handler(s *store.Store, streams context.Context) (http.Handler, error) {
 				if route, _, routeErr := router.FindRoute(r); routeErr == nil {
 					operation = route.Operation.OperationID
 				}
-				identity, err := authorize(r, auth, s.Settings.PublicAPIKeys, operation)
+				identity, err := authorize(r, auth, s.Settings.PublicAPIKeys, s.Settings.ReadOnlyAPIKeys, operation)
 				if err != nil {
 					writeError(w, err)
 					return
