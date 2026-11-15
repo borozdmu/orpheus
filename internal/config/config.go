@@ -459,6 +459,7 @@ type Settings struct {
 	DatabaseURL                string
 	ConfigFile                 string
 	PublicAPIKeys              []string
+	ReadOnlyAPIKeys            []string
 	EnvEncryptionKey           string
 	HarnessEnvAllowlist        []string
 	SandboxProxyURL            string

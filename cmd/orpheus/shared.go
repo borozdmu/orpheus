@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -27,6 +28,7 @@ import (
 // a database, provider, or catalog through a URL, header hint, or session ID.
 type tenantSettings struct {
 	APIKeys          []string          `json:"api_keys"`
+	ReadOnlyAPIKeys  []string          `json:"read_only_api_keys"`
 	Database         string            `json:"database_url"`
 	Encryption       string            `json:"encryption_key"`
 	IssuerKeys       map[string]string `json:"issuer_keys"`
@@ -76,7 +78,7 @@ func loadTenant(dir string) (tenantSettings, error) {
 	if tenant.Database == "" || len(tenant.APIKeys) == 0 {
 		return tenant, errors.New("tenant requires database and API keys")
 	}
-	for _, key := range tenant.APIKeys {
+	for _, key := range slices.Concat(tenant.APIKeys, tenant.ReadOnlyAPIKeys) {
 		if len(key) < 32 || strings.ContainsAny(key, " \n\r\t") {
 			return tenant, errors.New("invalid tenant API key")
 		}
@@ -129,6 +131,7 @@ func serveShared(ctx context.Context, root string) error {
 		}
 		settings := config.DefaultSettings()
 		settings.DatabaseURL, settings.EnvEncryptionKey, settings.PublicAPIKeys = t.Database, t.Encryption, t.APIKeys
+		settings.ReadOnlyAPIKeys = t.ReadOnlyAPIKeys
 		settings.ConfigFile = filepath.Join(dir, "orpheus.toml")
 		settings.HarnessEnvAllowlist = t.Allowlist
 		if t.MaxSessions > 0 {
@@ -170,7 +173,7 @@ func serveShared(ctx context.Context, root string) error {
 		if err != nil {
 			return fmt.Errorf("%s: API initialization failed", entry.Name())
 		}
-		for _, key := range t.APIKeys {
+		for _, key := range slices.Concat(t.APIKeys, t.ReadOnlyAPIKeys) {
 			hash := sha256.Sum256([]byte(key))
 			if routes[hash] != nil {
 				return errors.New("ambiguous API key across tenant routes")
