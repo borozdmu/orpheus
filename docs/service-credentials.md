@@ -164,7 +164,12 @@ The response check tolerates a provider clock up to five seconds ahead, solely
 when bounding future timestamps. It preserves all grant timestamps, rejects
 expired credentials and never extends the execution deadline. Providers enforce
 their own leases. Provider failures leave the existing expiry unchanged; there is
-no permanent-key fallback.
+no permanent-key fallback. A renewal that fails with `service_credentials_unavailable`
+(timeout, network, 5xx) is retried every 10 seconds while the current lease is
+valid; a refusal (`service_access_denied`, `audience_unconfirmed`,
+`service_credentials_conflict`) stops the run at once. The worker logs the failed check
+(`Service credentials stopped the run`: service, `audience` or `renew`, or `lease`,
+and the protocol code) without messages or secrets.
 
 Restart restores the saved grant while valid; it does not issue again under old
 model memory. An expired lease stops the sandbox, fails the run with

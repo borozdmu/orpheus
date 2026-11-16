@@ -68,7 +68,7 @@ func (e *Executor) send(ctx context.Context, record store.SessionRecord, run sto
 			return err
 		}
 		if credentials.Expired(time.Now()) {
-			return e.expireCredentials(ctx, record, run, credentials)
+			return e.expireCredentials(ctx, record, run, credentials, leaseExpired)
 		}
 	}
 	send := false

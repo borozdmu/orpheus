@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"path"
 	"strings"
 	"time"
@@ -33,7 +34,7 @@ func (e *Executor) serviceCredentials(ctx context.Context, record store.SessionR
 		return false, nil
 	}
 	if state.Expired(time.Now()) {
-		return true, e.expireCredentials(ctx, record, run, state)
+		return true, e.expireCredentials(ctx, record, run, state, leaseExpired)
 	}
 	if e.credentialsRetryAt == nil || e.credentialsInvocationID != state.Context.InvocationID {
 		e.credentialsRetryAt = map[string]time.Time{}
@@ -43,11 +44,12 @@ func (e *Executor) serviceCredentials(ctx context.Context, record store.SessionR
 	for code, entry := range state.Entries {
 		if entry.Config.Protocol != "" && !time.Now().Before(e.credentialsRetryAt["audience:"+code]) {
 			if err := e.Store.CredentialClient.Confirm(ctx, entry.Config, state.Context); err != nil {
-				return true, e.expireCredentials(ctx, record, run, state)
+				return true, e.expireCredentials(ctx, record, run, state, credentialCause(code, "audience", err))
 			}
 			e.credentialsRetryAt["audience:"+code] = time.Now().Add(15 * time.Second)
 		}
 	}
+	var deferred []session.Detail
 	for code, entry := range state.Entries {
 		if time.Until(entry.Grant.ExpiresAt) > 60*time.Second || entry.Grant.ExpiresAt.Equal(entry.Grant.RunExpiresAt) || time.Now().Before(e.credentialsRetryAt[code]) {
 			continue
@@ -55,9 +57,13 @@ func (e *Executor) serviceCredentials(ctx context.Context, record store.SessionR
 		e.credentialsRetryAt[code] = time.Now().Add(10 * time.Second)
 		grant, err := e.Store.CredentialClient.RenewConfirmed(ctx, entry.Config, code, state.Context, entry.Grant)
 		if err != nil {
-			if entry.Config.Protocol != "" {
-				return true, e.expireCredentials(ctx, record, run, state)
+			// A refusal stops the run now. An unavailable provider is retried while
+			// the current lease is valid; the lease itself still bounds access.
+			if entry.Config.Protocol != "" && !renewalRetryable(err) {
+				return true, e.expireCredentials(ctx, record, run, state, credentialCause(code, "renew", err))
 			}
+			deferred = append(deferred, credentialCause(code, "renew", err))
+			slog.WarnContext(ctx, "Service credential renewal deferred", "session_id", e.ID, "service", code, "code", problemCode(err))
 			continue
 		} // Retain the original deadline; no permanent-key fallback.
 		entry.Grant = grant
@@ -70,7 +76,7 @@ func (e *Executor) serviceCredentials(ctx context.Context, record store.SessionR
 		}
 	}
 	if state.Expired(time.Now()) {
-		return true, e.expireCredentials(ctx, record, run, state)
+		return true, e.expireCredentials(ctx, record, run, state, append(deferred, leaseExpired)...)
 	}
 	if e.sandbox == nil {
 		return false, nil
@@ -146,7 +152,34 @@ func (e *Executor) removeCredentialFiles(ctx context.Context, state servicecrede
 	e.credentialsRunID = uuid.Nil
 	return nil
 }
-func (e *Executor) expireCredentials(ctx context.Context, record store.SessionRecord, run store.RunRecord, state servicecredentials.State) error {
+
+// leaseExpired records that the saved lease or absolute deadline passed.
+var leaseExpired = session.Detail{Path: []any{"lease"}, Code: "lease_expired"}
+
+// problemCode returns the protocol code of a provider or connector error, never its message.
+func problemCode(err error) string {
+	var problem *session.APIError
+	if errors.As(err, &problem) && problem.Problem.Code != "" {
+		return problem.Problem.Code
+	}
+	return "unclassified"
+}
+
+// credentialCause names the failed check for the worker log.
+func credentialCause(service, step string, err error) session.Detail {
+	return session.Detail{Path: []any{service, step}, Code: problemCode(err)}
+}
+
+// renewalRetryable reports a provider that is temporarily unavailable, not a refusal.
+func renewalRetryable(err error) bool {
+	return problemCode(err) == "service_credentials_unavailable"
+}
+
+func (e *Executor) expireCredentials(ctx context.Context, record store.SessionRecord, run store.RunRecord, state servicecredentials.State, causes ...session.Detail) error {
+	// The run error keeps its public contract; the failed check goes to the worker log only.
+	for _, cause := range causes {
+		slog.WarnContext(ctx, "Service credentials stopped the run", "session_id", e.ID, "run_id", run.ID, "path", cause.Path, "code", cause.Code)
+	}
 	// Remove local access and stop execution even when the remote revoke is unavailable.
 	if record.SandboxID != nil {
 		if err := e.ensureSandbox(ctx, &record, &run); err != nil {
