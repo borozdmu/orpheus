@@ -152,6 +152,7 @@ func (e *Executor) removeCredentialFiles(ctx context.Context, state servicecrede
 	e.credentialsRunID = uuid.Nil
 	return nil
 }
+
 // leaseExpired records that the saved lease or absolute deadline passed.
 var leaseExpired = session.Detail{Path: []any{"lease"}, Code: "lease_expired"}
 
