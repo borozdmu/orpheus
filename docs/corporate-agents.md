@@ -31,3 +31,11 @@ run metadata; no server key or callback address is installed. Existing issue /
 renew services retain their protocol. Box's release manifest fixes all source
 commits and drives one cross-component compatibility test; a matching branch
 name is not a compatibility contract.
+
+The Skillum cabinet uses the `skillum` connector for a private text dialog. Its
+source is the authenticated workspace UUID. The audience instance and the
+author namespace both equal `skillum:<workspace UUID>`. The audience is
+`exact`, complete and of type `skillum-private`, with the author as its only
+reader. The channel and message IDs are canonical UUIDs. Attachment and thread
+fields are empty. The server-configured connector must reconfirm the participant's
+membership, agent admission and dialog ownership on protected operations.
