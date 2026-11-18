@@ -458,3 +458,48 @@ func TestWorkOwnerUsesRoleCredentialAndSessionOnIssuerOnly(t *testing.T) {
 		t.Fatal("issuer rejection was not enforced")
 	}
 }
+
+func TestWorkRoleKeyAndOwnerStayOffEnvdRequests(t *testing.T) {
+	owner := map[string]string{"orpheus_reader": "reader", "orpheus_dialog": "dialog"}
+	envd := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("X-API-Key") != "" || r.Header.Get("X-Work-Sandbox-Owner") != "" {
+			t.Error("issuer credentials or owner forwarded to envd")
+		}
+		if r.Header.Get("X-Access-Token") != "scoped-envd-token" {
+			t.Error("missing scoped envd credential")
+		}
+		_, _ = io.WriteString(w, "fixture")
+	}))
+	defer envd.Close()
+	issuer := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("X-API-Key") != "role-key" || r.Header.Get("X-Work-Sandbox-Owner") == "" {
+			t.Error("missing issuer credentials")
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"sandboxID": "sbx", "templateID": "fixture", "envdVersion": "0.6.4", "envdAccessToken": "scoped-envd-token", "metadata": owner})
+	}))
+	defer issuer.Close()
+	old := http.DefaultTransport
+	http.DefaultTransport = issuer.Client().Transport
+	t.Cleanup(func() { http.DefaultTransport = old })
+	t.Setenv("AGENTBOX_SANDBOX_URL", envd.URL)
+	t.Setenv("ORPHEUS_WORK_ISSUER_URL", issuer.URL)
+	t.Setenv("ORPHEUS_WORK_ISSUER_TOKEN", "role-key")
+	p, err := (&Platform{}).WithWorkOwner(owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	box, err := p.Connect(t.Context(), "sbx", time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stream, err := box.Read(t.Context(), "/fixture")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = stream.Close() }()
+	contents, err := io.ReadAll(stream)
+	if err != nil || string(contents) != "fixture" {
+		t.Fatal("envd read failed", err)
+	}
+}
