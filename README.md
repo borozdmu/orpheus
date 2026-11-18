@@ -208,3 +208,9 @@ directory. Use `migrate --dir /path/to/migrations up` or
 
 For the transport-independent corporate assignment, repeated current-audience
 checks and durable token revocation, see [corporate agent access](docs/corporate-agents.md).
+
+Private Skillum workers use a role-specific HTTPS Work issuer configured with
+`ORPHEUS_WORK_ISSUER_URL` and `ORPHEUS_WORK_ISSUER_TOKEN`. Provision these
+workers without the shared AgentBox project key. The SDK sends the verified
+session owner and role credential to the issuer on every control-plane request.
+Work checks its sandbox registry before it uses the project credential.

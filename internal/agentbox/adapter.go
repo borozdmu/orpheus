@@ -3,10 +3,15 @@ package agentbox
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"io"
 	"io/fs"
 	"maps"
+	"net/http"
+	"net/url"
+	"os"
 	"sync"
 	"time"
 
@@ -21,6 +26,27 @@ type Platform struct {
 
 func (p *Platform) WithOwner(owner map[string]string) harness.Platform {
 	return &Platform{client: p.client, owner: maps.Clone(owner)}
+}
+
+// For private workers, the role credential authenticates only to the Work issuer.
+func (p *Platform) WithWorkOwner(owner map[string]string) (harness.Platform, error) {
+	endpoint, err := url.Parse(os.Getenv("ORPHEUS_WORK_ISSUER_URL"))
+	roleKey := os.Getenv("ORPHEUS_WORK_ISSUER_TOKEN")
+	if err != nil || endpoint.Scheme != "https" || endpoint.Host == "" || endpoint.User != nil ||
+		endpoint.RawQuery != "" || endpoint.Fragment != "" || roleKey == "" {
+		return nil, errors.New("private Work issuer is not configured")
+	}
+	identity, err := json.Marshal(owner)
+	if err != nil {
+		return nil, err
+	}
+	headers := http.Header{"X-Work-Sandbox-Owner": {base64.RawURLEncoding.EncodeToString(identity)}}
+	client, err := sdk.NewClient(sdk.WithAPIURL(endpoint.String()), sdk.WithAPIKey(roleKey), sdk.WithHeaders(headers),
+		sdk.WithHTTPClient(&http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}))
+	if err != nil {
+		return nil, err
+	}
+	return &Platform{client: client, owner: maps.Clone(owner)}, nil
 }
 func (p *Platform) matches(id string, info *sdk.SandboxInfo, expected map[string]string) bool {
 	if len(expected) == 0 {

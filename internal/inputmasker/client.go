@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"strings"
 	"time"
@@ -27,6 +28,16 @@ func Mask(ctx context.Context, endpoint string, timeout time.Duration, texts []s
 	if err != nil {
 		return nil, ErrUnavailable
 	}
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.Proxy = nil
+	defer transport.CloseIdleConnections()
+	if socket, local := strings.CutPrefix(endpoint, "unix://"); local {
+		dialer := &net.Dialer{}
+		transport.DialContext = func(ctx context.Context, _, _ string) (net.Conn, error) {
+			return dialer.DialContext(ctx, "unix", socket)
+		}
+		endpoint = "http://localhost"
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(endpoint, "/")+"/v1/mask/segments", bytes.NewReader(raw))
 	if err != nil {
 		return nil, ErrUnavailable
@@ -35,9 +46,6 @@ func Mask(ctx context.Context, endpoint string, timeout time.Duration, texts []s
 	if token != "" {
 		req.Header.Set("Authorization", "Bearer "+token)
 	}
-	transport := http.DefaultTransport.(*http.Transport).Clone()
-	transport.Proxy = nil
-	defer transport.CloseIdleConnections()
 	client := http.Client{Timeout: timeout, Transport: transport, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	res, err := client.Do(req)
 	if err != nil {
