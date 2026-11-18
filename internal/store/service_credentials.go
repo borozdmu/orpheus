@@ -2,11 +2,15 @@ package store
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"maps"
 	"slices"
 	"time"
+
+	"github.com/orpheus-agents/orpheus/agentcontract"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -129,6 +133,24 @@ func (s *Store) checkCredentials(ctx context.Context, tx pgx.Tx, record SessionR
 		return session.Problem(409, "service_scope_changed", "Service scope changed. Create a clean session using the same invocation.")
 	}
 	return nil
+}
+func (s *Store) sandboxOwner(profile string, state servicecredentials.State) (*session.SandboxOwner, error) {
+	scope := s.Profiles.SkillumPrivate
+	if scope == nil {
+		return nil, nil
+	}
+	fail := session.Problem(403, "sandbox_owner_unconfirmed", "A confirmed private Skillum assignment is required.")
+	grant, ok := state.Entries[scope.Provider]
+	if !ok || grant.Config.Protocol != agentcontract.Version || state.Context.Assignment == nil {
+		return nil, fail
+	}
+	task, err := agentcontract.Decode(*state.Context.Assignment)
+	if err != nil || task.Delivery.Connector != "skillum" || task.Delivery.Source != scope.Workspace || task.Agent != profile {
+		return nil, fail
+	}
+	reader, _ := json.Marshal(task.Author)
+	digest := sha256.Sum256(reader)
+	return &session.SandboxOwner{Workspace: scope.Workspace, Role: profile, Dialog: task.Delivery.Chat, Reader: hex.EncodeToString(digest[:])}, nil
 }
 func (s *Store) insertCredentials(ctx context.Context, tx pgx.Tx, sid, rid uuid.UUID, state servicecredentials.State) error {
 	if len(state.Entries) == 0 {

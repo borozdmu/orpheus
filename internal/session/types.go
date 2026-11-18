@@ -141,12 +141,19 @@ type Credentials struct {
 	Store     *CredentialStore `json:"store" toml:"-"`
 	Key       string           `json:"key" toml:"key"`
 }
+type SandboxOwner struct {
+	Workspace string `json:"workspace"`
+	Role      string `json:"role"`
+	Dialog    string `json:"dialog"`
+	Reader    string `json:"reader"`
+}
 type ResolvedConfiguration struct {
-	InputMasked bool          `json:"input_masked,omitzero"`
-	Version     int           `json:"version"`
-	Harness     string        `json:"harness"`
-	Public      Configuration `json:"public"`
-	Credentials Credentials   `json:"credentials"`
+	SandboxOwner *SandboxOwner `json:"sandbox_owner,omitzero"`
+	InputMasked  bool          `json:"input_masked,omitzero"`
+	Version      int           `json:"version"`
+	Harness      string        `json:"harness"`
+	Public       Configuration `json:"public"`
+	Credentials  Credentials   `json:"credentials"`
 }
 type TextMessage struct {
 	ExternalKey *string         `json:"external_key,omitzero"`

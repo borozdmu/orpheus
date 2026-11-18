@@ -743,6 +743,10 @@ func (s *Store) accept(ctx context.Context, a Admission) (session.Acceptance, er
 			if err != nil {
 				return err
 			}
+			resolved.SandboxOwner, err = s.sandboxOwner(resolved.Public.Agent.Profile, credentials)
+			if err != nil {
+				return err
+			}
 			resolved.InputMasked = a.inputMasked
 			id := uuid.New()
 			token, err := s.Cipher.Encrypt(id, a.Create.Configuration.Sandbox.Env)
@@ -757,6 +761,15 @@ func (s *Store) accept(ctx context.Context, a Admission) (session.Acceptance, er
 			record, err = GetSession(ctx, tx, a.SessionID, true)
 			if err != nil {
 				return err
+			}
+		}
+		if a.Create == nil && a.RunID == uuid.Nil {
+			owner, err := s.sandboxOwner(record.Configuration.Public.Agent.Profile, credentials)
+			if err != nil {
+				return err
+			}
+			if !reflect.DeepEqual(owner, record.Configuration.SandboxOwner) {
+				return session.Problem(403, "sandbox_owner_changed", "A separate session is required for this owner.")
 			}
 		}
 		if a.Create == nil && a.RunID == uuid.Nil && !record.AllowMultipleRuns {

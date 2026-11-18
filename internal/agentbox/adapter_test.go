@@ -2,10 +2,12 @@ package agentbox
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"io/fs"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -352,5 +354,69 @@ func TestFindTraversesAllStatesAndPages(t *testing.T) {
 				t.Fatal(found, err)
 			}
 		})
+	}
+}
+
+func TestPrivatePlatformChecksRemoteOwnerBeforeLifecycleChanges(t *testing.T) {
+	owner := map[string]string{"orpheus_workspace": "workspace", "orpheus_role": "mark", "orpheus_dialog": "dialog", "orpheus_reader": "reader", "orpheus_session_id": "session"}
+	for name := range owner {
+		t.Run(name, func(t *testing.T) {
+			actual := maps.Clone(owner)
+			actual[name] = "other"
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				if r.Method != "GET" {
+					t.Errorf("unexpected mutation: %s", r.Method)
+					w.WriteHeader(403)
+					return
+				}
+				if r.URL.Path == "/v2/sandboxes" {
+					_ = json.NewEncoder(w).Encode([]map[string]string{{"sandboxID": "fixture", "state": "running"}})
+					return
+				}
+				if r.URL.Path != "/sandboxes/fixture" {
+					t.Errorf("unexpected path %s", r.URL.Path)
+				}
+				_ = json.NewEncoder(w).Encode(map[string]any{"sandboxID": "fixture", "state": "running", "metadata": actual})
+			}))
+			defer server.Close()
+			client, err := sdk.NewClient(sdk.WithAPIKey("fixture"), sdk.WithAPIURL(server.URL))
+			if err != nil {
+				t.Fatal(err)
+			}
+			p := &Platform{client: client, owner: owner}
+			if err := p.Delete(t.Context(), "fixture"); err == nil {
+				t.Fatal("delete accepted")
+			}
+			if _, err := p.Connect(t.Context(), "fixture", time.Minute); err == nil {
+				t.Fatal("connect accepted")
+			}
+			if _, err := p.Info(t.Context(), "fixture"); err == nil {
+				t.Fatal("info accepted")
+			}
+			if _, err := p.Find(t.Context(), nil); err == nil {
+				t.Fatal("foreign list entry accepted")
+			}
+			box := &sandbox{s: &sdk.Sandbox{ID: "fixture"}, platform: p}
+			if err := box.Pause(t.Context()); err == nil {
+				t.Fatal("pause accepted")
+			}
+		})
+	}
+}
+
+func TestPrivatePlatformAcceptsMatchingMetadata(t *testing.T) {
+	owner := map[string]string{"orpheus_session_id": "s", "orpheus_role": "mark"}
+	metadata := sdk.SandboxMetadata(owner)
+	p := &Platform{owner: owner}
+	if !p.matches("own", &sdk.SandboxInfo{SandboxID: "own", Metadata: &metadata}, owner) {
+		t.Fatal("correct owner denied")
+	}
+	if p.matches("wrong", &sdk.SandboxInfo{SandboxID: "own", Metadata: &metadata}, owner) || p.matches("own", &sdk.SandboxInfo{SandboxID: "own"}, owner) {
+		t.Fatal("unconfirmed owner accepted")
+	}
+	labels := p.labels(map[string]string{"orpheus_role": "other", "orpheus_operation_id": "operation"})
+	if labels["orpheus_role"] != "mark" || labels["orpheus_operation_id"] != "operation" {
+		t.Fatal(labels)
 	}
 }

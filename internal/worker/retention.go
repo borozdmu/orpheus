@@ -118,6 +118,13 @@ func (e *Executor) cleanupRetainedSandbox(ctx context.Context, retryAt time.Time
 	if err := json.Unmarshal(op.Parameters, &params); err != nil {
 		return "failed", err
 	}
+	record, _, err := e.read(ctx)
+	if err != nil {
+		return "failed", err
+	}
+	if err = e.bindPlatform(record); err != nil {
+		return "failed", err
+	}
 	callCtx, cancel := context.WithTimeout(ctx, e.Store.Settings.RPCTimeout)
 	callErr := e.Platform.Delete(callCtx, params.SandboxID)
 	cancel()

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"io/fs"
+	"maps"
 	"sync"
 	"time"
 
@@ -13,30 +14,87 @@ import (
 	"github.com/orpheus-agents/orpheus/internal/harness"
 )
 
-type Platform struct{ client *sdk.Client }
+type Platform struct {
+	client *sdk.Client
+	owner  map[string]string
+}
+
+func (p *Platform) WithOwner(owner map[string]string) harness.Platform {
+	return &Platform{client: p.client, owner: maps.Clone(owner)}
+}
+func (p *Platform) matches(id string, info *sdk.SandboxInfo, expected map[string]string) bool {
+	if len(expected) == 0 {
+		return true
+	}
+	if info == nil || info.SandboxID != id || info.Metadata == nil {
+		return false
+	}
+	for k, v := range expected {
+		if (*info.Metadata)[k] != v {
+			return false
+		}
+	}
+	return true
+}
+func (p *Platform) verify(ctx context.Context, id string, expected map[string]string) error {
+	if len(expected) == 0 {
+		return nil
+	}
+	info, err := p.client.Sandboxes.Info(ctx, id)
+	if err != nil {
+		return classify(err)
+	}
+	if !p.matches(id, info, expected) {
+		return errors.New("sandbox owner mismatch")
+	}
+	return nil
+}
+func (p *Platform) labels(metadata map[string]string) map[string]string {
+	if len(p.owner) == 0 {
+		return metadata
+	}
+	result := maps.Clone(metadata)
+	if result == nil {
+		result = map[string]string{}
+	}
+	maps.Copy(result, p.owner)
+	return result
+}
 
 func New() (*Platform, error) {
 	c, err := sdk.NewClient()
 	if err != nil {
 		return nil, err
 	}
-	return &Platform{c}, nil
+	return &Platform{client: c}, nil
 }
 func (p *Platform) Create(ctx context.Context, template string, timeout time.Duration, metadata map[string]string) (harness.Sandbox, error) {
+	metadata = p.labels(metadata)
 	s, err := p.client.Sandboxes.Create(ctx, &sdk.CreateSandboxOptions{Template: template, Timeout: timeout, Metadata: metadata, AutoPause: new(true), AutoPauseMemory: new(true), AutoResume: new(false)})
 	if err != nil {
 		return nil, classify(err)
 	}
-	return &sandbox{s}, nil
+	if len(p.owner) > 0 {
+		if err := p.verify(ctx, s.ID, metadata); err != nil {
+			return nil, err
+		}
+	}
+	return &sandbox{s: s, platform: p}, nil
 }
 func (p *Platform) Connect(ctx context.Context, id string, timeout time.Duration) (harness.Sandbox, error) {
+	if err := p.verify(ctx, id, p.owner); err != nil {
+		return nil, err
+	}
 	s, err := p.client.Sandboxes.Connect(ctx, id, &sdk.ConnectSandboxOptions{Timeout: timeout})
 	if err != nil {
 		return nil, classify(err)
 	}
-	return &sandbox{s}, nil
+	return &sandbox{s: s, platform: p}, nil
 }
 func (p *Platform) Delete(ctx context.Context, id string) error {
+	if err := p.verify(ctx, id, p.owner); err != nil {
+		return err
+	}
 	_, err := p.client.Sandboxes.Kill(ctx, id)
 	return classify(err)
 }
@@ -45,9 +103,13 @@ func (p *Platform) Info(ctx context.Context, id string) (string, error) {
 	if err != nil {
 		return "", classify(err)
 	}
+	if !p.matches(id, s, p.owner) {
+		return "", errors.New("sandbox owner mismatch")
+	}
 	return string(s.State), nil
 }
 func (p *Platform) Find(ctx context.Context, metadata map[string]string) ([]string, error) {
+	metadata = p.labels(metadata)
 	out := []string{}
 	next := ""
 	for {
@@ -56,6 +118,11 @@ func (p *Platform) Find(ctx context.Context, metadata map[string]string) ([]stri
 			return nil, classify(err)
 		}
 		for _, s := range page.Items {
+			if len(p.owner) > 0 {
+				if err := p.verify(ctx, s.SandboxID, metadata); err != nil {
+					return nil, err
+				}
+			}
 			out = append(out, s.SandboxID)
 		}
 		if page.NextToken == "" {
@@ -65,12 +132,18 @@ func (p *Platform) Find(ctx context.Context, metadata map[string]string) ([]stri
 	}
 }
 
-type sandbox struct{ s *sdk.Sandbox }
+type sandbox struct {
+	s        *sdk.Sandbox
+	platform *Platform
+}
 
 const sandboxUser = "user"
 
 func (s *sandbox) ID() string { return s.s.ID }
 func (s *sandbox) Pause(ctx context.Context) error {
+	if err := s.platform.verify(ctx, s.ID(), s.platform.owner); err != nil {
+		return err
+	}
 	return classify(s.s.Pause(ctx, &sdk.PauseOptions{Memory: new(true)}))
 }
 func (s *sandbox) SetTimeout(ctx context.Context, d time.Duration) error {

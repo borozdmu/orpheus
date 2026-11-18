@@ -253,3 +253,21 @@ the target database has zero protected sessions and all protected entrypoints
 are stopped may an old binary start. Its strict TOML decoder also requires
 removing `[input_masker]` and all profile `mask_input` fields, but that removal
 alone does not make stored protected sessions safe.
+
+## Private Skillum tenant
+
+A tenant sharing an AgentBox project uses a dedicated tenant configuration and
+database. Configure the same binding on its API and worker:
+
+```toml
+[skillum_private]
+workspace = "6cdf2ec3-95f6-4261-b011-8237e89717cc"
+provider = "kord"
+```
+
+Each profile name matches the agent in its signed assignment. Admission requires
+a successful corporate grant from the selected provider. The workspace, profile,
+private dialog and reader are frozen in the session's configuration snapshot.
+The worker stamps these identities and the session ID on creation and verifies
+provider-reported metadata before adopting, connecting, pausing or deleting a
+sandbox. A missing or mismatched binding in a private tenant fails closed.
