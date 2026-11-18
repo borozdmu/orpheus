@@ -53,6 +53,8 @@ type Profile struct {
 	Auth         Auth         `toml:"auth"`
 }
 type SkillumPrivate struct {
+	Agent     string `toml:"agent"`
+	Profile   string `toml:"profile"`
 	Workspace string `toml:"workspace"`
 	Provider  string `toml:"provider"`
 }
@@ -130,8 +132,9 @@ func ReadProfiles(r io.Reader) (Profiles, error) {
 	p.SkillumPrivate = source.SkillumPrivate
 	if scope := p.SkillumPrivate; scope != nil {
 		id, err := uuid.Parse(scope.Workspace)
+		_, registered := source.Profiles[scope.Profile]
 		provider := p.Services[scope.Provider].Provider
-		if err != nil || id == uuid.Nil || id.String() != scope.Workspace || provider == nil || provider.Protocol != agentcontract.Version {
+		if !registered || len(source.Profiles) != 1 || !accountID.MatchString(scope.Agent) || err != nil || id == uuid.Nil || id.String() != scope.Workspace || provider == nil || provider.Protocol != agentcontract.Version {
 			return p, errors.New("invalid private Skillum tenant binding")
 		}
 	}

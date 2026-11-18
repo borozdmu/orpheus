@@ -263,9 +263,11 @@ database. Configure the same binding on its API and worker:
 [skillum_private]
 workspace = "6cdf2ec3-95f6-4261-b011-8237e89717cc"
 provider = "kord"
+agent = "mark"
+profile = "marketing-native"
 ```
 
-Each profile name matches the agent in its signed assignment. Admission requires
+The tenant serves one registered profile. The agent name matches its signed assignment. Admission requires
 a successful corporate grant from the selected provider. The workspace, profile,
 private dialog and reader are frozen in the session's configuration snapshot.
 The worker stamps these identities and the session ID on creation and verifies

@@ -15,7 +15,7 @@ func (e *Executor) bindPlatform(record store.SessionRecord) error {
 	if scope == nil && owner == nil {
 		return nil
 	}
-	if scope == nil || owner == nil || owner.Workspace != scope.Workspace || owner.Role != record.Configuration.Public.Agent.Profile || owner.Dialog == "" || owner.Reader == "" || record.ID != e.ID {
+	if scope == nil || owner == nil || owner.Workspace != scope.Workspace || owner.Role != scope.Agent || scope.Profile != record.Configuration.Public.Agent.Profile || owner.Dialog == "" || owner.Reader == "" || record.ID != e.ID {
 		return errors.New("sandbox owner differs from tenant configuration")
 	}
 	platform, ok := e.Platform.(interface {
@@ -24,6 +24,6 @@ func (e *Executor) bindPlatform(record store.SessionRecord) error {
 	if !ok {
 		return errors.New("sandbox ownership verification unavailable")
 	}
-	e.Platform = platform.WithOwner(map[string]string{"orpheus_workspace": owner.Workspace, "orpheus_role": owner.Role, "orpheus_dialog": owner.Dialog, "orpheus_reader": owner.Reader, "orpheus_session_id": e.ID.String()})
+	e.Platform = platform.WithOwner(map[string]string{"orpheus_workspace": owner.Workspace, "orpheus_role": owner.Role, "orpheus_profile": scope.Profile, "orpheus_dialog": owner.Dialog, "orpheus_reader": owner.Reader, "orpheus_session_id": e.ID.String()})
 	return nil
 }

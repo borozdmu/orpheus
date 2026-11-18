@@ -23,10 +23,10 @@ func TestSkillumOwnerRequiresMatchingCorporateGrant(t *testing.T) {
 		t.Fatal(err)
 	}
 	raw := json.RawMessage(data)
-	scope := config.SkillumPrivate{Workspace: workspace, Provider: "provider"}
+	scope := config.SkillumPrivate{Workspace: workspace, Provider: "provider", Agent: "mark", Profile: "marketing-native"}
 	s := &Store{Profiles: config.Profiles{SkillumPrivate: &scope}}
 	state := servicecredentials.State{Context: session.AccessContext{Assignment: &raw}, Entries: map[string]servicecredentials.Entry{"provider": {Config: servicecredentials.Config{Protocol: agentcontract.Version}}}}
-	owned, err := s.sandboxOwner("mark", state)
+	owned, err := s.sandboxOwner("marketing-native", state)
 	if err != nil || owned == nil || owned.Workspace != workspace || owned.Role != "mark" || owned.Dialog != dialog || len(owned.Reader) != 64 {
 		t.Fatal(owned, err)
 	}
@@ -34,12 +34,12 @@ func TestSkillumOwnerRequiresMatchingCorporateGrant(t *testing.T) {
 		t.Fatal("accepted another role")
 	}
 	scope.Workspace = uuid.NewString()
-	if _, err = s.sandboxOwner("mark", state); err == nil {
+	if _, err = s.sandboxOwner("marketing-native", state); err == nil {
 		t.Fatal("accepted another workspace")
 	}
 	scope.Workspace = workspace
 	delete(state.Entries, "provider")
-	if _, err = s.sandboxOwner("mark", state); err == nil {
+	if _, err = s.sandboxOwner("marketing-native", state); err == nil {
 		t.Fatal("accepted missing grant")
 	}
 }

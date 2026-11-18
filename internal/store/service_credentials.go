@@ -145,12 +145,12 @@ func (s *Store) sandboxOwner(profile string, state servicecredentials.State) (*s
 		return nil, fail
 	}
 	task, err := agentcontract.Decode(*state.Context.Assignment)
-	if err != nil || task.Delivery.Connector != "skillum" || task.Delivery.Source != scope.Workspace || task.Agent != profile {
+	if err != nil || task.Delivery.Connector != "skillum" || task.Delivery.Source != scope.Workspace || profile != scope.Profile || task.Agent != scope.Agent {
 		return nil, fail
 	}
 	reader, _ := json.Marshal(task.Author)
 	digest := sha256.Sum256(reader)
-	return &session.SandboxOwner{Workspace: scope.Workspace, Role: profile, Dialog: task.Delivery.Chat, Reader: hex.EncodeToString(digest[:])}, nil
+	return &session.SandboxOwner{Workspace: scope.Workspace, Role: task.Agent, Dialog: task.Delivery.Chat, Reader: hex.EncodeToString(digest[:])}, nil
 }
 func (s *Store) insertCredentials(ctx context.Context, tx pgx.Tx, sid, rid uuid.UUID, state servicecredentials.State) error {
 	if len(state.Entries) == 0 {
