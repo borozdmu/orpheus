@@ -25,7 +25,7 @@ func (a Audience) Validate() error {
 	}
 	switch a.Kind {
 	case "exact":
-		if a.ChannelType != "P" && a.ChannelType != "D" && a.ChannelType != "telegram-managed" && a.ChannelType != "telegram-private" {
+		if a.ChannelType != "P" && a.ChannelType != "D" && a.ChannelType != "telegram-managed" && a.ChannelType != "telegram-private" && a.ChannelType != "skillum-private" {
 			return denied
 		}
 		if len(a.Groups) != 0 {

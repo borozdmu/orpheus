@@ -66,7 +66,14 @@ func (a Assignment) Validate() error {
 	if a.Schema != Version || a.InvocationID == uuid.Nil || !plain(a.Agent) || !plain(a.Author.PrincipalID) || !plain(a.Author.ID) || !plain(a.Author.Namespace) || a.Confirmation.ObservedAt.IsZero() || len(a.Readers) == 0 || len(a.Readers) > 4096 || len(a.Text) > 1<<20 || len(a.Attachments) > 128 {
 		return fail
 	}
-	if (a.Delivery.Connector != "telegram" && a.Delivery.Connector != "mattermost") || !plain(a.Delivery.Source) || !plain(a.Delivery.Chat) || !plain(a.Delivery.Message) {
+	if a.Delivery.Connector == "skillum" || a.Audience.ChannelType == "skillum-private" {
+		if !a.validSkillumDialog() {
+			return fail
+		}
+	} else if a.Delivery.Connector != "telegram" && a.Delivery.Connector != "mattermost" {
+		return fail
+	}
+	if !plain(a.Delivery.Source) || !plain(a.Delivery.Chat) || !plain(a.Delivery.Message) {
 		return fail
 	}
 	seen := map[string]bool{}
