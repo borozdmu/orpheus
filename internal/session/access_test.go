@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/orpheus-agents/orpheus/agentcontract"
 )
 
 func validAccessContext() AccessContext {
@@ -108,5 +109,33 @@ func TestAccessContextInputAuthorityIsExplicitAndNamespaced(t *testing.T) {
 	var missing *AccessContext
 	if missing.Allows(access.Subject) {
 		t.Fatal("missing context grants authority")
+	}
+}
+
+func TestPrivateDialogRestrictsSubsequentInput(t *testing.T) {
+	access := validAccessContext()
+	workspace, dialog := uuid.NewString(), uuid.NewString()
+	access.Subject = AccessSubject{Namespace: "skillum:" + workspace, ID: "12"}
+	person := agentcontract.Principal{Namespace: access.Subject.Namespace, ID: access.Subject.ID, PrincipalID: "34"}
+	task := agentcontract.Assignment{
+		Schema: agentcontract.Version, InvocationID: access.InvocationID, Agent: "mark", Author: person,
+		Readers: []agentcontract.Principal{person}, Text: "hello",
+		Delivery:     agentcontract.Route{Connector: "skillum", Source: workspace, Chat: dialog, Message: uuid.NewString()},
+		Audience:     agentcontract.Audience{Kind: "exact", ChannelType: "skillum-private", Complete: true, Instance: person.Namespace, ChannelID: dialog},
+		Confirmation: agentcontract.Confirmation{ObservedAt: time.Now()},
+	}
+	raw, err := json.Marshal(task)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assignment := json.RawMessage(raw)
+	access.Assignment = &assignment
+	access.AllowedInputSubjects = []AccessSubject{access.Subject}
+	if err := access.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	access.AllowedInputSubjects = append(access.AllowedInputSubjects, AccessSubject{Namespace: person.Namespace, ID: "99"})
+	if access.Validate() == nil {
+		t.Fatal("private dialog admitted a second input subject")
 	}
 }

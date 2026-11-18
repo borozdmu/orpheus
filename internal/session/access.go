@@ -51,6 +51,13 @@ func (a *AccessContext) Validate() error {
 		if err != nil || task.InvocationID != a.InvocationID || task.Author.Namespace != a.Subject.Namespace || task.Author.ID != a.Subject.ID {
 			return Problem(422, "invalid_assignment", "Assignment authority differs from the run.")
 		}
+		if task.Delivery.Connector == "skillum" {
+			for _, subject := range a.AllowedInputSubjects {
+				if subject != a.Subject {
+					return Problem(422, "invalid_access_context", "Private dialog input is restricted to its author.")
+				}
+			}
+		}
 	}
 	seen := map[AccessSubject]bool{}
 	for _, subject := range a.AllowedInputSubjects {
