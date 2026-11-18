@@ -13,7 +13,7 @@ import (
 
 func TestInputMaskerConfiguration(t *testing.T) {
 	const profile = "[templates.codex]\n[profiles.p]\nharness='codex'\nmodel='m'\nmask_input=true\n[profiles.p.auth]\nmode='api_key'\napi_key_env='KEY'\n"
-	for _, address := range []string{"http://127.0.0.1:3101", "https://masker.internal/prefix"} {
+	for _, address := range []string{"http://127.0.0.1:3101", "https://masker.internal/prefix", "unix:///mask/masker.sock"} {
 		p, err := ReadProfiles(strings.NewReader("[input_masker]\nurl='" + address + "'\ntimeout_seconds=30\n" + profile))
 		if err != nil || !p.Profiles["p"].MaskInput || p.InputMasker.URL != address || p.InputMasker.TimeoutSeconds != 30 {
 			t.Fatal("masker configuration lost", err)
@@ -29,7 +29,7 @@ func TestInputMaskerConfiguration(t *testing.T) {
 			t.Fatal("accepted missing or unbounded masker", settings)
 		}
 	}
-	for _, address := range []string{"file:///tmp/masker", "http:///path", "http://user:password@localhost", "http://localhost?secret=value", "http://localhost?", "http://localhost#"} {
+	for _, address := range []string{"file:///tmp/masker", "unix://remote/path", "unix:relative", "unix:///", "unix:///mask/../other", "unix:///mask/sock?x=1", "http:///path", "http://user:password@localhost", "http://localhost?secret=value", "http://localhost?", "http://localhost#"} {
 		if _, err := ReadProfiles(strings.NewReader("[input_masker]\nurl='" + address + "'\ntimeout_seconds=2\n" + profile)); err == nil {
 			t.Fatal("invalid masker URL accepted", address)
 		}

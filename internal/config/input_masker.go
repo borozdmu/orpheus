@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strings"
 	"syscall"
 )
@@ -28,8 +29,20 @@ func (m InputMasker) validate() error {
 		return nil
 	}
 	u, err := url.Parse(m.URL)
-	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Hostname() == "" || u.User != nil || u.RawQuery != "" || u.ForceQuery || strings.Contains(m.URL, "#") || m.TimeoutSeconds < 1 || m.TimeoutSeconds > 300 {
+	if err != nil || u.User != nil || u.RawQuery != "" || u.ForceQuery || strings.Contains(m.URL, "#") || m.TimeoutSeconds < 1 || m.TimeoutSeconds > 300 {
 		return errors.New("invalid input_masker URL or timeout_seconds (1..300 required)")
+	}
+	switch u.Scheme {
+	case "unix":
+		if !filepath.IsAbs(u.Path) || filepath.Clean(u.Path) != u.Path || u.Path == "/" || m.URL != "unix://"+u.Path {
+			return errors.New("input_masker requires an absolute local socket path")
+		}
+	case "http", "https":
+		if u.Hostname() == "" {
+			return errors.New("missing input_masker host")
+		}
+	default:
+		return errors.New("invalid input_masker scheme")
 	}
 	return nil
 }

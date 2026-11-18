@@ -123,7 +123,7 @@ api_key_env = "COUNSEL_GATEWAY_KEY"
 ```
 
 Use the trusted service's reachable address (container loopback refers to the
-container itself). HTTP and HTTPS are supported; credentials, queries and
+container itself). For a local service, set `url = "unix:///mask/masker.sock"` and mount its socket directory into the trusted Orpheus API. The transport uses only that Unix socket. HTTP and HTTPS are supported; credentials, queries and
 fragments in the URL are forbidden. The timeout is required, from 1 to 300 seconds.
 Keep this service on the trusted network: it receives original text. Its HMAC key
 stays inside the masker; Orpheus uses only `POST /v1/mask/segments`, no manifests.

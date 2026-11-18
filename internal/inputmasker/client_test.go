@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -124,5 +126,32 @@ func TestMaskAuthorization(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+	}
+}
+
+func TestMaskUnixSocket(t *testing.T) {
+	socket := filepath.Join(t.TempDir(), "mask.sock")
+	listener, err := net.Listen("unix", socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/v1/mask/segments" {
+			t.Error("unexpected masker request")
+		}
+		_, _ = io.WriteString(w, `{"masked_texts":["masked"]}`)
+	}))
+	_ = server.Listener.Close()
+	server.Listener = listener
+	server.Start()
+	defer server.Close()
+	got, err := Mask(t.Context(), "unix://"+socket, time.Second, []string{"test"}, "")
+	if err != nil || !reflect.DeepEqual(got, []string{"masked"}) {
+		t.Fatal("socket masking failed", err)
+	}
+	server.Close()
+	got, err = Mask(t.Context(), "unix://"+socket, time.Second, []string{"test"}, "")
+	if got != nil || !errors.Is(err, ErrUnavailable) {
+		t.Fatal("closed socket must stop admission")
 	}
 }
