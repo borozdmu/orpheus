@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/orpheus-agents/orpheus/agentcontract"
 	"github.com/orpheus-agents/orpheus/internal/secret"
 	"github.com/orpheus-agents/orpheus/internal/session"
 	"github.com/pelletier/go-toml/v2"
@@ -51,7 +52,14 @@ type Profile struct {
 	Instructions string       `toml:"instructions"`
 	Auth         Auth         `toml:"auth"`
 }
+type SkillumPrivate struct {
+	Agent     string `toml:"agent"`
+	Profile   string `toml:"profile"`
+	Workspace string `toml:"workspace"`
+	Provider  string `toml:"provider"`
+}
 type Profiles struct {
+	SkillumPrivate   *SkillumPrivate                    `toml:"skillum_private"`
 	InputMasker      InputMasker                        `toml:"input_masker"`
 	Services         map[string]Service                 `toml:"services"`
 	Templates        map[string]Template                `toml:"templates"`
@@ -63,10 +71,11 @@ func ReadProfiles(r io.Reader) (Profiles, error) {
 	// Presence matters: an omitted default and an explicitly empty value are
 	// different, as are forbidden fields in either authentication variant.
 	var source struct {
-		InputMasker InputMasker         `toml:"input_masker"`
-		Services    map[string]Service  `toml:"services"`
-		Templates   map[string]Template `toml:"templates"`
-		Profiles    map[string]struct {
+		SkillumPrivate *SkillumPrivate     `toml:"skillum_private"`
+		InputMasker    InputMasker         `toml:"input_masker"`
+		Services       map[string]Service  `toml:"services"`
+		Templates      map[string]Template `toml:"templates"`
+		Profiles       map[string]struct {
 			MaskInput   bool    `toml:"mask_input"`
 			Description *string `toml:"description"`
 			Harness     string  `toml:"harness"`
@@ -120,6 +129,15 @@ func ReadProfiles(r io.Reader) (Profiles, error) {
 		return p, err
 	}
 	p.Services = source.Services
+	p.SkillumPrivate = source.SkillumPrivate
+	if scope := p.SkillumPrivate; scope != nil {
+		id, err := uuid.Parse(scope.Workspace)
+		_, registered := source.Profiles[scope.Profile]
+		provider := p.Services[scope.Provider].Provider
+		if !registered || len(source.Profiles) != 1 || !accountID.MatchString(scope.Agent) || err != nil || id == uuid.Nil || id.String() != scope.Workspace || provider == nil || provider.Protocol != agentcontract.Version {
+			return p, errors.New("invalid private Skillum tenant binding")
+		}
+	}
 	for name, raw := range source.CredentialStores {
 		s := session.CredentialStore{Type: "s3", Bucket: raw.Bucket, Region: "us-east-1", EndpointURL: raw.EndpointURL}
 		if raw.Type != nil {

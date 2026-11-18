@@ -357,6 +357,9 @@ func (e *Executor) tick(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	if err := e.bindPlatform(record); err != nil {
+		return err
+	}
 	if run == nil {
 		if !record.SlotReserved {
 			return nil
