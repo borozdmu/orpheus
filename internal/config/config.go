@@ -182,7 +182,7 @@ func ReadProfiles(r io.Reader) (Profiles, error) {
 				return p, errors.New("invalid API key profile")
 			}
 			if *raw.Auth.APIKeyEnv == "ORPHEUS_WORK_ISSUER_TOKEN" {
-				return p, errors.New("Work issuer credential cannot be used as model credentials")
+				return p, errors.New("private Work issuer credential cannot be used as model credentials")
 			}
 			v.Auth.APIKeyEnv = *raw.Auth.APIKeyEnv
 			if raw.Auth.BaseURL != nil {
