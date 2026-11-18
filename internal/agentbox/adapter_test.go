@@ -2,6 +2,7 @@ package agentbox
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -418,5 +419,42 @@ func TestPrivatePlatformAcceptsMatchingMetadata(t *testing.T) {
 	labels := p.labels(map[string]string{"orpheus_role": "other", "orpheus_operation_id": "operation"})
 	if labels["orpheus_role"] != "mark" || labels["orpheus_operation_id"] != "operation" {
 		t.Fatal(labels)
+	}
+}
+
+func TestWorkOwnerRequiresPrivateIssuer(t *testing.T) {
+	t.Setenv("ORPHEUS_WORK_ISSUER_TOKEN", "test-role")
+	for _, endpoint := range []string{"", "http://untrusted.example", "https://user@issuer.example", "https://issuer.example?project=other"} {
+		t.Setenv("ORPHEUS_WORK_ISSUER_URL", endpoint)
+		if _, err := (&Platform{}).WithWorkOwner(nil); err == nil {
+			t.Fatal("accepted invalid endpoint", endpoint)
+		}
+	}
+}
+
+func TestWorkOwnerUsesRoleCredentialAndSessionOnIssuerOnly(t *testing.T) {
+	owner := map[string]string{"orpheus_dialog": "dialog", "orpheus_reader": "reader"}
+	var seen bool
+	issuer := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, err := base64.RawURLEncoding.DecodeString(r.Header.Get("X-Work-Sandbox-Owner"))
+		var got map[string]string
+		if err != nil || json.Unmarshal(raw, &got) != nil || !maps.Equal(got, owner) || r.Header.Get("X-API-Key") != "role-only" {
+			t.Error("incorrect credentials or owner scope")
+		}
+		seen = true
+		w.WriteHeader(http.StatusForbidden)
+	}))
+	defer issuer.Close()
+	old := http.DefaultTransport
+	http.DefaultTransport = issuer.Client().Transport
+	t.Cleanup(func() { http.DefaultTransport = old })
+	t.Setenv("ORPHEUS_WORK_ISSUER_URL", issuer.URL)
+	t.Setenv("ORPHEUS_WORK_ISSUER_TOKEN", "role-only")
+	scoped, err := (&Platform{}).WithWorkOwner(owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = scoped.Info(t.Context(), "test"); err == nil || !seen {
+		t.Fatal("issuer rejection was not enforced")
 	}
 }

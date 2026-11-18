@@ -19,11 +19,15 @@ func (e *Executor) bindPlatform(record store.SessionRecord) error {
 		return errors.New("sandbox owner differs from tenant configuration")
 	}
 	platform, ok := e.Platform.(interface {
-		WithOwner(map[string]string) harness.Platform
+		WithWorkOwner(map[string]string) (harness.Platform, error)
 	})
 	if !ok {
 		return errors.New("sandbox ownership verification unavailable")
 	}
-	e.Platform = platform.WithOwner(map[string]string{"orpheus_workspace": owner.Workspace, "orpheus_role": owner.Role, "orpheus_profile": scope.Profile, "orpheus_dialog": owner.Dialog, "orpheus_reader": owner.Reader, "orpheus_session_id": e.ID.String()})
+	bound, err := platform.WithWorkOwner(map[string]string{"orpheus_workspace": owner.Workspace, "orpheus_role": owner.Role, "orpheus_profile": scope.Profile, "orpheus_dialog": owner.Dialog, "orpheus_reader": owner.Reader, "orpheus_session_id": e.ID.String()})
+	if err != nil {
+		return err
+	}
+	e.Platform = bound
 	return nil
 }
