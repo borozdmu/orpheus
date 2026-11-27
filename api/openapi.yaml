@@ -1212,6 +1212,11 @@ components:
         CreateRun:
             additionalProperties: false
             properties:
+                model_profile:
+                    type: string
+                    minLength: 1
+                    maxLength: 256
+                    description: Select the model and reasoning effort of a compatible variant of the session profile for this run. The native thread and its authority are preserved.
                 access_context:
                     $ref: '#/components/schemas/AccessContext'
                 input_fingerprint:

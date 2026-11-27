@@ -221,6 +221,9 @@ func (d *Driver) Start(ctx context.Context, agent session.AgentConfiguration, th
 		Turn NativeTurn `json:"turn"`
 	}
 	params := map[string]any{"threadId": thread, "input": []map[string]string{{"type": "text", "text": texts[len(texts)-1]}}}
+	if agent.Model != "" {
+		params["model"] = agent.Model
+	}
 	if agent.Codex.Effort != "" {
 		params["effort"] = agent.Codex.Effort
 	}

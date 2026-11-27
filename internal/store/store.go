@@ -90,6 +90,19 @@ func GetSession(ctx context.Context, q db.DBTX, id uuid.UUID, lock bool) (Sessio
 	}
 	return SessionRecord(row), err
 }
+
+// RunModel returns the immutable override if this run selected one.
+func (s *Store) RunModel(ctx context.Context, runID uuid.UUID) (*session.ModelSelection, error) {
+	selection, err := db.New(s.Pool).GetRunModel(ctx, runID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &selection, nil
+}
+
 func GetRun(ctx context.Context, q db.DBTX, sid, rid uuid.UUID) (RunRecord, error) {
 	v, err := runRecord(db.New(q).GetRun(ctx, db.GetRunParams{SessionID: sid, ID: rid}))
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -536,6 +549,7 @@ func selectFinalMessage(ctx context.Context, tx pgx.Tx, r *RunRecord) error {
 const maxAdmissionMessages = 256
 
 type Admission struct {
+	ModelProfile     *string
 	policySession    *SessionRecord
 	inputMasked      bool
 	requestDigest    string
@@ -573,7 +587,8 @@ func fingerprint(a Admission) (string, error) {
 		EnvNames         []string              `json:"env_names,omitzero"`
 		EnvFrom          []string              `json:"env_from,omitzero"`
 		Services         []string              `json:"services,omitzero"`
-	}{messages, a.InputFingerprint, runEnvNames, runEnvFrom, runServices}
+		ModelProfile     *string               `json:"model_profile,omitzero"`
+	}{messages, a.InputFingerprint, runEnvNames, runEnvFrom, runServices, a.ModelProfile}
 	if a.Create != nil {
 		c := a.Create.Configuration
 		if c.Sandbox.EnvFrom == nil {
@@ -826,6 +841,22 @@ func (s *Store) accept(ctx context.Context, a Admission) (session.Acceptance, er
 			run, err = runRecord(db.New(tx).CreateRun(ctx, db.CreateRunParams{InputFingerprint: a.InputFingerprint, ID: runID, SessionID: record.ID, Number: record.NextRunNumber, EnvCiphertext: token, EnvNames: envNames, EnvFrom: runEnvFrom, Services: runServices}))
 			if err != nil {
 				return err
+			}
+			if a.ModelProfile != nil {
+				selection, err := config.ResolveRunModel(s.Profiles, record.Configuration, *a.ModelProfile)
+				if err != nil {
+					return err
+				}
+				owner, err := s.sandboxOwner(*a.ModelProfile, credentials)
+				if err != nil {
+					return err
+				}
+				if !reflect.DeepEqual(owner, record.Configuration.SandboxOwner) {
+					return session.Problem(403, "sandbox_owner_changed", "A separate session is required for this owner.")
+				}
+				if err := db.New(tx).InsertRunModel(ctx, db.InsertRunModelParams{RunID: runID, Selection: *selection}); err != nil {
+					return err
+				}
 			}
 			if err := s.insertCredentials(ctx, tx, record.ID, run.ID, credentials); err != nil {
 				return err

@@ -1194,6 +1194,9 @@ type CreateRun struct {
 	// Messages Ordered user messages accepted atomically. The last starts the run; earlier messages are injected into the agent context first.
 	Messages []TextMessage `json:"messages"`
 
+	// ModelProfile Select the model and reasoning effort of a compatible variant of the session profile for this run. The native thread and its authority are preserved.
+	ModelProfile *string `json:"model_profile,omitempty"`
+
 	// Services Services available only to this run's before_run and after_run hooks, as with run env_from. Never passed to the harness, after_create, or before_remove.
 	Services *ServiceCodes `json:"services,omitempty"`
 }

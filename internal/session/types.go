@@ -109,6 +109,13 @@ type CodexConfiguration struct {
 	Personality string `json:"personality,omitzero"`
 	ServiceTier string `json:"service_tier,omitzero"`
 }
+
+// ModelSelection is the immutable model override accepted for one run.
+type ModelSelection struct {
+	Profile string `json:"profile"`
+	Model   string `json:"model"`
+	Effort  string `json:"effort"`
+}
 type AgentConfiguration struct {
 	Profile      string             `json:"profile"`
 	Model        string             `json:"model"`
