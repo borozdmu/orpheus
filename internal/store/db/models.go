@@ -143,6 +143,11 @@ type RunInputSubject struct {
 	Subject   json.RawMessage `json:"subject"`
 }
 
+type RunModelSelection struct {
+	RunID     uuid.UUID              `json:"run_id"`
+	Selection session.ModelSelection `json:"selection"`
+}
+
 type RunServiceCredential struct {
 	RunID         uuid.UUID       `json:"run_id"`
 	InvocationID  uuid.UUID       `json:"invocation_id"`

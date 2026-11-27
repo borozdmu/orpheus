@@ -9,6 +9,7 @@ import (
 	"maps"
 	"net/url"
 	"os"
+	"reflect"
 	"regexp"
 	"slices"
 	"strconv"
@@ -430,6 +431,26 @@ func Resolve(in session.ConfigurationInput, p Profiles, allowlist []string, defa
 	}
 	out = session.ResolvedConfiguration{Version: 1, Harness: "codex", Public: session.Configuration{Agent: session.AgentConfiguration{Profile: in.Agent.Profile, Model: *model, Codex: session.CodexConfiguration{Effort: profile.Codex.Effort, Summary: profile.Codex.Summary, Personality: profile.Codex.Personality, ServiceTier: profile.Codex.ServiceTier}, Instructions: instructions}, Sandbox: session.SandboxConfiguration{Template: in.Sandbox.Template, EnvNames: names, EnvFrom: refs, Services: services}, Limits: in.Limits, Hooks: hooks}, Credentials: creds}
 	return out, nil
+}
+
+// ResolveRunModel selects only the model and effort. Authorization, masking,
+// the instructions and all sandbox settings remain bound to the original session.
+func ResolveRunModel(p Profiles, current session.ResolvedConfiguration, name string) (*session.ModelSelection, error) {
+	root, _, _ := strings.Cut(current.Public.Agent.Profile, "--")
+	fail := session.Problem(422, "incompatible_model_profile", "The model profile is incompatible with this session.")
+	profile, ok := p.Profiles[name]
+	if !ok || name != root && !strings.HasPrefix(name, root+"--") || profile.Model == nil || profile.Harness != current.Harness || profile.MaskInput != current.InputMasked {
+		return nil, fail
+	}
+	in := session.ConfigurationInput{Agent: session.AgentInput{Profile: name}, Sandbox: session.SandboxInput{Template: current.Public.Sandbox.Template}, Limits: current.Public.Limits}
+	resolved, err := Resolve(in, p, nil, current.Public.Limits.MaxSessionTokens)
+	if err != nil {
+		return nil, err
+	}
+	if !reflect.DeepEqual(resolved.Credentials, current.Credentials) {
+		return nil, fail
+	}
+	return &session.ModelSelection{Profile: name, Model: resolved.Public.Agent.Model, Effort: resolved.Public.Agent.Codex.Effort}, nil
 }
 func Environment(cipher *secret.Cipher, id uuid.UUID, token *string, cfg session.Configuration, allowlist []string) (map[string]string, error) {
 	return MergedEnvironment(cipher, id, token, cfg, allowlist, nil, nil)

@@ -51,6 +51,16 @@ func (e *Executor) send(ctx context.Context, record store.SessionRecord, run sto
 			}
 		}
 	}
+	agent := record.Configuration.Public.Agent
+	if kind == "start" {
+		selected, err := e.Store.RunModel(ctx, run.ID)
+		if err != nil {
+			return err
+		}
+		if selected != nil {
+			agent.Model, agent.Codex.Effort = selected.Model, selected.Effort
+		}
+	}
 	o, err := e.operation(ctx, kind, &run.ID, &message.ID, params)
 	if err != nil {
 		return err
@@ -123,7 +133,7 @@ func (e *Executor) send(ctx context.Context, record store.SessionRecord, run sto
 			for i, input := range batch {
 				texts[i] = input.Text
 			}
-			id, err := e.driver.Start(ctx, record.Configuration.Public.Agent, *record.ThreadID, texts)
+			id, err := e.driver.Start(ctx, agent, *record.ThreadID, texts)
 			return operationResult{TurnID: id}, err
 		}
 		return operationResult{}, e.driver.Steer(ctx, *record.ThreadID, *run.NativeTurnID, message.Text)

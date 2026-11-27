@@ -293,6 +293,7 @@ func TestContextWithoutInstructionsAndTurnEffort(t *testing.T) {
 	if _, err := d.Start(t.Context(), agent, "thread", []string{"first"}); err != nil {
 		t.Fatal(err)
 	}
+	agent.Model = "second-model"
 	agent.Codex.Effort = ""
 	if _, err := d.Start(t.Context(), agent, "thread", []string{"second"}); err != nil {
 		t.Fatal(err)
@@ -309,7 +310,7 @@ func TestContextWithoutInstructionsAndTurnEffort(t *testing.T) {
 	}
 	first := calls[1]["params"].(map[string]any)
 	second := calls[2]["params"].(map[string]any)
-	if first["effort"] != "high" || first["threadId"] != "thread" {
+	if first["effort"] != "high" || first["threadId"] != "thread" || first["model"] != "model" || second["model"] != "second-model" || second["threadId"] != "thread" {
 		t.Fatal(first)
 	}
 	if _, ok := second["effort"]; ok {

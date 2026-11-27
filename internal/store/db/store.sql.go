@@ -311,6 +311,17 @@ func (q *Queries) GetRun(ctx context.Context, arg GetRunParams) (Run, error) {
 	return i, err
 }
 
+const getRunModel = `-- name: GetRunModel :one
+SELECT selection FROM run_model_selections WHERE run_id = $1
+`
+
+func (q *Queries) GetRunModel(ctx context.Context, runID uuid.UUID) (session.ModelSelection, error) {
+	row := q.db.QueryRow(ctx, getRunModel, runID)
+	var selection session.ModelSelection
+	err := row.Scan(&selection)
+	return selection, err
+}
+
 const getSession = `-- name: GetSession :one
 SELECT s.id, s.created_at, s.configuration, s.env_ciphertext, s.sandbox_state, s.sandbox_last_known_state, s.sandbox_error, s.sandbox_id, s.process_id, s.launch_id, s.thread_id, s.history_path, s.history_offset, s.workspace, s.harness_home, s.slot_reserved, s.next_run_number, s.next_event_sequence, s.namespace, s.external_key, s.input_tokens, s.output_tokens, s.total_tokens, s.cached_input_tokens, s.reasoning_output_tokens, s.cached_input_native_total, s.reasoning_output_native_total, s.allow_multiple_runs
 FROM sessions s
@@ -400,6 +411,20 @@ func (q *Queries) InsertIdempotency(ctx context.Context, arg InsertIdempotencyPa
 		arg.RunID,
 		arg.MessageID,
 	)
+	return err
+}
+
+const insertRunModel = `-- name: InsertRunModel :exec
+INSERT INTO run_model_selections (run_id, selection) VALUES ($1, $2)
+`
+
+type InsertRunModelParams struct {
+	RunID     uuid.UUID              `json:"run_id"`
+	Selection session.ModelSelection `json:"selection"`
+}
+
+func (q *Queries) InsertRunModel(ctx context.Context, arg InsertRunModelParams) error {
+	_, err := q.db.Exec(ctx, insertRunModel, arg.RunID, arg.Selection)
 	return err
 }
 

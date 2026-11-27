@@ -125,6 +125,12 @@ INSERT INTO runs AS r(id, session_id, number, input_fingerprint, env_ciphertext,
 VALUES($1, $2, $3, $4, $5, $6, $7, $8)
 RETURNING r.*;
 
+-- name: InsertRunModel :exec
+INSERT INTO run_model_selections (run_id, selection) VALUES ($1, $2);
+
+-- name: GetRunModel :one
+SELECT selection FROM run_model_selections WHERE run_id = $1;
+
 -- name: InsertIdempotency :exec
 INSERT INTO idempotency_keys(operation, resource, key, fingerprint, session_id, run_id, message_id)
 VALUES($1, $2, $3, $4, $5, $6, $7);

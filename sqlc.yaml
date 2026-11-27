@@ -58,6 +58,10 @@ sql:
               import: "github.com/orpheus-agents/orpheus/internal/session"
               type: "Error"
               pointer: true
+          - column: "run_model_selections.selection"
+            go_type:
+              import: "github.com/orpheus-agents/orpheus/internal/session"
+              type: "ModelSelection"
           - column: "runs.services"
             go_type:
               import: "github.com/orpheus-agents/orpheus/internal/session"
