@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/orpheus-agents/orpheus/agentcontract"
 	"github.com/orpheus-agents/orpheus/internal/servicecredentials"
 	"github.com/orpheus-agents/orpheus/internal/session"
 )
@@ -13,11 +14,20 @@ import (
 var serviceCode = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,63}$`)
 
 type Service struct {
-	Provider    *servicecredentials.Config `toml:"provider"`
-	Name        string                     `toml:"name"`
-	Description string                     `toml:"description"`
-	EnvFrom     []string                   `toml:"env_from"`
-	BeforeRun   *string                    `toml:"before_run"`
+	AssignmentProvider *servicecredentials.Config `toml:"assignment_provider"`
+	Provider           *servicecredentials.Config `toml:"provider"`
+	Name               string                     `toml:"name"`
+	Description        string                     `toml:"description"`
+	EnvFrom            []string                   `toml:"env_from"`
+	BeforeRun          *string                    `toml:"before_run"`
+}
+
+// ProviderFor freezes the chosen issuer into this run. A failed signed proof is never retried as unsigned.
+func (s Service) ProviderFor(access *session.AccessContext) *servicecredentials.Config {
+	if s.AssignmentProvider != nil && access != nil && access.Assignment != nil {
+		return s.AssignmentProvider
+	}
+	return s.Provider
 }
 
 func validateServices(services map[string]Service) error {
@@ -35,9 +45,23 @@ func validateServices(services map[string]Service) error {
 		if err := validateEnvironment(nil, service.EnvFrom, nil); err != nil {
 			return fmt.Errorf("invalid service %q environment references", code)
 		}
-		if service.Provider != nil {
-			if err := service.Provider.Validate(); err != nil {
+		if signed := service.AssignmentProvider; signed != nil {
+			if service.Provider == nil || service.Provider.Protocol != "" || signed.Protocol != agentcontract.Version ||
+				signed.SecretEnv == service.Provider.SecretEnv || signed.TokenFile != service.Provider.TokenFile {
+				return fmt.Errorf("service %q requires distinct unsigned and signed issuers with the same token file", code)
+			}
+		}
+		for _, provider := range []*servicecredentials.Config{service.Provider, service.AssignmentProvider} {
+			if provider == nil {
+				continue
+			}
+			if err := provider.Validate(); err != nil {
 				return fmt.Errorf("invalid service %q provider: %w", code, err)
+			}
+			for _, projected := range provider.ProjectServices {
+				if _, ok := services[projected]; !ok {
+					return fmt.Errorf("unknown projected service %q", projected)
+				}
 			}
 		}
 		slices.Sort(service.EnvFrom)
@@ -54,12 +78,15 @@ func (p Profiles) EnvironmentAllowlist(explicit []string) []string {
 		names = append(names, service.EnvFrom...)
 	}
 	for _, service := range p.Services {
-		if service.Provider != nil {
-			for _, connector := range service.Provider.AudienceConnectors {
+		for _, provider := range []*servicecredentials.Config{service.Provider, service.AssignmentProvider} {
+			if provider == nil {
+				continue
+			}
+			for _, connector := range provider.AudienceConnectors {
 				names = slices.DeleteFunc(names, func(name string) bool { return name == connector.SecretEnv })
 			}
 			names = slices.DeleteFunc(names, func(name string) bool {
-				return name == service.Provider.SecretEnv || name == service.Provider.AudienceSecretEnv
+				return name == provider.SecretEnv || name == provider.AudienceSecretEnv
 			})
 		}
 	}

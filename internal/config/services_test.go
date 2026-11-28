@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/json"
 	"errors"
 	"reflect"
 	"slices"
@@ -153,5 +154,30 @@ func TestProviderSecretCannotBeModelAPIKey(t *testing.T) {
 	_, err := Resolve(session.ConfigurationInput{Agent: session.AgentInput{Profile: "p"}, Sandbox: session.SandboxInput{Template: "codex"}, Limits: session.Limits{RunTimeoutSeconds: 1200}}, p, nil, 1000)
 	if err == nil {
 		t.Fatal("provider key accepted as model key")
+	}
+}
+
+func TestAssignmentProviderUsesSeparateIssuerWithoutLeakingItsSecret(t *testing.T) {
+	base := &servicecredentials.Config{Endpoint: "https://issuer.invalid", SecretEnv: "UNSIGNED_SECRET", TokenFile: "~/.kord/run.token"}
+	signed := &servicecredentials.Config{Protocol: "corporate-assignment.v1", Endpoint: base.Endpoint, SecretEnv: "SIGNED_SECRET", TokenFile: base.TokenFile, AudienceEndpoint: "https://witness.invalid", AudienceSecretEnv: "WITNESS_SECRET"}
+	s := Service{Name: "Source", Description: "One source", Provider: base, AssignmentProvider: signed}
+	catalog := map[string]Service{"source": s}
+	if err := validateServices(catalog); err != nil {
+		t.Fatal(err)
+	}
+	if s.ProviderFor(nil) != base || s.ProviderFor(&session.AccessContext{}) != base {
+		t.Fatal("legacy issuer changed")
+	}
+	access := session.AccessContext{Assignment: new(json.RawMessage)}
+	if s.ProviderFor(&access) != signed {
+		t.Fatal("signed proof would use legacy issuer")
+	}
+	p := Profiles{Services: catalog}
+	if allowed := p.EnvironmentAllowlist([]string{"UNSIGNED_SECRET", "SIGNED_SECRET", "WITNESS_SECRET"}); len(allowed) != 0 {
+		t.Fatal("server secrets visible in environment allowlist")
+	}
+	signed.SecretEnv = base.SecretEnv
+	if err := validateServices(catalog); err == nil {
+		t.Fatal("issuer identity reused")
 	}
 }

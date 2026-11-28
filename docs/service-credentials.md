@@ -46,6 +46,20 @@ model can use the token file. Run-level `services` are available only to hooks a
 reject providers. Existing `env_from` services keep their behavior. The pilot uses
 `run_timeout_seconds: 1200`.
 
+A provider can opt in to receiving the codes of other services selected for the same
+run with `project_services = ["source-a", "source-b"]`. Core intersects this
+server-configured list with the sandbox and current run services and sends a
+sorted `selected_services` array on issuance. An empty array means none of the
+configured services were selected. Other issuers retain their original payload.
+The sandbox cannot supply this field through its access context.
+
+During migration, a service with an existing unsigned issuer may additionally
+configure `[services.<code>.assignment_provider]` with
+`protocol = "corporate-assignment.v1"`, a distinct server credential and the same
+token path. Core uses this issuer only for a signed assignment. A failed
+confirmation fails the run. Each issuer must independently restrict its own
+eligible bindings. The selected issuer remains fixed across renewal and revocation.
+
 ## Trusted invocation context
 
 `CreateSession` and `CreateRun` accept `access_context` from callers authenticated

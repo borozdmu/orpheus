@@ -48,7 +48,7 @@ func (s *Store) issueCredentials(ctx context.Context, a Admission) (servicecrede
 	}
 	paths := map[string]bool{}
 	for _, code := range slices.Sorted(slices.Values(codes)) {
-		cfg := s.Profiles.Services[code].Provider
+		cfg := s.Profiles.Services[code].ProviderFor(a.AccessContext)
 		if cfg == nil {
 			continue
 		}
@@ -59,7 +59,7 @@ func (s *Store) issueCredentials(ctx context.Context, a Admission) (servicecrede
 		if err := a.AccessContext.Validate(); err != nil {
 			return state, err
 		}
-		grant, err := s.CredentialClient.Issue(ctx, *cfg, code, *a.AccessContext)
+		grant, err := s.CredentialClient.Issue(ctx, *cfg, code, *a.AccessContext, slices.Concat(codes, a.Services)...)
 		if err != nil {
 			return state, err
 		}
@@ -125,7 +125,7 @@ func (s *Store) checkCredentials(ctx context.Context, tx pgx.Tx, record SessionR
 	compatibleProvider := true
 	for code, previous := range old.Entries {
 		next, ok := state.Entries[code]
-		if !ok || !maps.Equal(previous.Config.AudienceConnectors, next.Config.AudienceConnectors) || previous.Config.Protocol != next.Config.Protocol || previous.Config.AudienceEndpoint != next.Config.AudienceEndpoint || previous.Config.AudienceSecretEnv != next.Config.AudienceSecretEnv || previous.Config.Endpoint != next.Config.Endpoint || previous.Config.SecretEnv != next.Config.SecretEnv || previous.Config.TokenFile != next.Config.TokenFile || !slices.Equal(slices.Sorted(slices.Values(previous.Config.ContextFields)), slices.Sorted(slices.Values(next.Config.ContextFields))) {
+		if !ok || !slices.Equal(previous.Config.ProjectServices, next.Config.ProjectServices) || !maps.Equal(previous.Config.AudienceConnectors, next.Config.AudienceConnectors) || previous.Config.Protocol != next.Config.Protocol || previous.Config.AudienceEndpoint != next.Config.AudienceEndpoint || previous.Config.AudienceSecretEnv != next.Config.AudienceSecretEnv || previous.Config.Endpoint != next.Config.Endpoint || previous.Config.SecretEnv != next.Config.SecretEnv || previous.Config.TokenFile != next.Config.TokenFile || !slices.Equal(slices.Sorted(slices.Values(previous.Config.ContextFields)), slices.Sorted(slices.Values(next.Config.ContextFields))) {
 			compatibleProvider = false
 		}
 	}

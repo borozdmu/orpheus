@@ -296,3 +296,39 @@ func TestIssueAndRenewPreserveProviderTimestampsWithClockSkew(t *testing.T) {
 		t.Fatal("renew changed or rejected provider timestamps", err)
 	}
 }
+
+func TestIssueProjectsOnlyTrustedSelectedServiceCodes(t *testing.T) {
+	t.Setenv("TEST_PROVIDER_KEY", strings.Repeat("k", 32))
+	var sent map[string]json.RawMessage
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sent = nil
+		if err := json.NewDecoder(r.Body).Decode(&sent); err != nil {
+			t.Error(err)
+		}
+		_ = json.NewEncoder(w).Encode(testGrant())
+	}))
+	defer server.Close()
+	cfg := testConfig(server.URL)
+	cfg.ProjectServices = []string{"selected-b", "selected-a"}
+	access := session.AccessContext{InvocationID: uuid.New(), ScopeContext: session.AccessScopeContext{"selected_services": json.RawMessage(`["selected-b"]`)}}
+	client := Client{HTTP: server.Client()}
+	for _, test := range []struct {
+		codes []string
+		want  string
+	}{
+		{nil, "[]"},
+		{[]string{"selected-a", "unrelated", "selected-a"}, `["selected-a"]`},
+		{[]string{"selected-b", "selected-a"}, `["selected-a","selected-b"]`},
+	} {
+		if _, err := client.Issue(t.Context(), cfg, "service", access, test.codes...); err != nil {
+			t.Fatal(err)
+		}
+		if got := string(sent["selected_services"]); got != test.want {
+			t.Fatalf("service projection %s, want %s", got, test.want)
+		}
+	}
+	cfg.ProjectServices = []string{"selected-a", "selected-a"}
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("duplicate service in projection")
+	}
+}

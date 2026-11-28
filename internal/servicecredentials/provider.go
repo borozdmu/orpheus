@@ -28,6 +28,7 @@ type AudienceConnector struct {
 	SecretEnv string `toml:"secret_env" json:"secret_env"`
 }
 type Config struct {
+	ProjectServices    []string                     `toml:"project_services" json:"project_services,omitzero"`
 	AudienceConnectors map[string]AudienceConnector `toml:"audience_connectors" json:"audience_connectors,omitzero"`
 	Protocol           string                       `toml:"protocol" json:"protocol,omitzero"`
 	AudienceEndpoint   string                       `toml:"audience_endpoint" json:"audience_endpoint,omitzero"`
@@ -40,12 +41,21 @@ type Config struct {
 
 var envName = regexp.MustCompile(`^[A-Z_][A-Z0-9_]*$`)
 var tokenPath = regexp.MustCompile(`^~/\.[a-z][a-z0-9_-]*/run\.token$`)
+var serviceCode = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,63}$`)
 var projection = []string{"subject", "scope_context", "context_observed_at"}
 
 func (c Config) Validate() error {
 	u, err := url.Parse(c.Endpoint)
 	if err != nil || u.Scheme != "https" || u.Hostname() == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || !envName.MatchString(c.SecretEnv) || !tokenPath.MatchString(c.TokenFile) {
 		return errors.New("invalid credentials provider configuration")
+	}
+	if len(c.ProjectServices) > 128 {
+		return errors.New("too many service names in provider projection")
+	}
+	for i, code := range c.ProjectServices {
+		if !serviceCode.MatchString(code) || slices.Contains(c.ProjectServices[:i], code) {
+			return errors.New("invalid or duplicate service in provider projection")
+		}
 	}
 	if c.Protocol != "" && c.Protocol != agentcontract.Version {
 		return errors.New("unsupported credentials protocol")
@@ -199,17 +209,30 @@ func (c Client) call(ctx context.Context, cfg Config, body any) (Grant, error) {
 	}
 	return out, nil
 }
-func (c Client) Issue(ctx context.Context, cfg Config, service string, access session.AccessContext) (Grant, error) {
+func (c Client) Issue(ctx context.Context, cfg Config, service string, access session.AccessContext, services ...string) (Grant, error) {
+	body := map[string]any{"operation": "issue", "request_id": uuid.New(), "service": service, "invocation_id": access.InvocationID}
+	if len(cfg.ProjectServices) > 0 {
+		selected := []string{}
+		for _, code := range cfg.ProjectServices {
+			if slices.Contains(services, code) {
+				selected = append(selected, code)
+			}
+		}
+		slices.Sort(selected)
+		body["selected_services"] = selected
+	}
 	if cfg.Protocol == agentcontract.Version {
 		a, witness, err := c.confirm(ctx, cfg, access)
 		if err != nil {
 			return Grant{}, err
 		}
-		return c.call(ctx, cfg, map[string]any{"operation": "issue_assignment", "request_id": uuid.New(), "service": service, "invocation_id": access.InvocationID, "assignment": map[string]any{"schema": "corporate-access.v1", "audience": a.Audience, "invocation_id": a.InvocationID, "agent": a.Agent, "author": a.Author, "readers": a.Readers, "provider_context": a.ProviderContext, "confirmation": map[string]any{"observed_at": a.Confirmation.ObservedAt, "digest": a.Confirmation.Digest}}, "context_observed_at": witness.ObservedAt})
+		body["operation"] = "issue_assignment"
+		body["assignment"] = map[string]any{"schema": "corporate-access.v1", "audience": a.Audience, "invocation_id": a.InvocationID, "agent": a.Agent, "author": a.Author, "readers": a.Readers, "provider_context": a.ProviderContext, "confirmation": map[string]any{"observed_at": a.Confirmation.ObservedAt, "digest": a.Confirmation.Digest}}
+		body["context_observed_at"] = witness.ObservedAt
+		return c.call(ctx, cfg, body)
 	}
 	// Keep the provider's projection separate from core-only run authority.
 	// In particular, allowed_input_subjects never leaves Orpheus.
-	body := map[string]any{"operation": "issue", "request_id": uuid.New(), "service": service, "invocation_id": access.InvocationID}
 	for _, field := range cfg.ContextFields {
 		switch field {
 		case "subject":
