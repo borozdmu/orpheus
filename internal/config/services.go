@@ -31,10 +31,20 @@ func (s Service) ProviderFor(access *session.AccessContext) *servicecredentials.
 }
 
 func validateServices(services map[string]Service) error {
+	projected := make(map[string]bool)
+	for _, service := range services {
+		for _, provider := range []*servicecredentials.Config{service.Provider, service.AssignmentProvider} {
+			if provider != nil {
+				for _, code := range provider.ProjectServices {
+					projected[code] = true
+				}
+			}
+		}
+	}
 	for code, service := range services {
 		service.Name = strings.TrimSpace(service.Name)
 		service.Description = strings.TrimSpace(service.Description)
-		if !serviceCode.MatchString(code) || service.Name == "" || service.Description == "" || (len(service.EnvFrom) == 0 && service.Provider == nil && service.BeforeRun == nil) {
+		if !serviceCode.MatchString(code) || service.Name == "" || service.Description == "" || (len(service.EnvFrom) == 0 && service.Provider == nil && service.BeforeRun == nil && !projected[code]) {
 			return fmt.Errorf("invalid service %q: code, name, description and environment references, provider or before_run are required", code)
 		}
 		if service.BeforeRun != nil {

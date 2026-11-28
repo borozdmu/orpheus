@@ -181,3 +181,24 @@ func TestAssignmentProviderUsesSeparateIssuerWithoutLeakingItsSecret(t *testing.
 		t.Fatal("issuer identity reused")
 	}
 }
+
+func TestProjectedServiceDoesNotNeedASandboxSecret(t *testing.T) {
+	provider := &servicecredentials.Config{Endpoint: "https://issuer.invalid", SecretEnv: "ISSUER_SECRET",
+		TokenFile: "~/.kord/run.token", ContextFields: []string{"subject", "scope_context", "context_observed_at"},
+		ProjectServices: []string{"selected"}}
+	services := map[string]Service{
+		"kord":     {Name: "Kord", Description: "Uses selected accounts", Provider: provider},
+		"selected": {Name: "Selected account", Description: "Available through Kord"},
+	}
+	if err := validateServices(services); err != nil {
+		t.Fatal(err)
+	}
+	refs, selected, err := ResolveServices(nil, nil, []string{"selected"}, Profiles{Services: services})
+	if err != nil || len(refs) != 0 || len(selected) != 1 || selected[0].Code != "selected" {
+		t.Fatalf("projected selection: refs=%v services=%v err=%v", refs, selected, err)
+	}
+	delete(services, "kord")
+	if err := validateServices(services); err == nil {
+		t.Fatal("unused empty service accepted")
+	}
+}
