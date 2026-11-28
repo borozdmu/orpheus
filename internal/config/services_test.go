@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/json"
 	"errors"
 	"reflect"
 	"slices"
@@ -153,5 +154,51 @@ func TestProviderSecretCannotBeModelAPIKey(t *testing.T) {
 	_, err := Resolve(session.ConfigurationInput{Agent: session.AgentInput{Profile: "p"}, Sandbox: session.SandboxInput{Template: "codex"}, Limits: session.Limits{RunTimeoutSeconds: 1200}}, p, nil, 1000)
 	if err == nil {
 		t.Fatal("provider key accepted as model key")
+	}
+}
+
+func TestAssignmentProviderUsesSeparateIssuerWithoutLeakingItsSecret(t *testing.T) {
+	base := &servicecredentials.Config{Endpoint: "https://issuer.invalid", SecretEnv: "UNSIGNED_SECRET", TokenFile: "~/.kord/run.token"}
+	signed := &servicecredentials.Config{Protocol: "corporate-assignment.v1", Endpoint: base.Endpoint, SecretEnv: "SIGNED_SECRET", TokenFile: base.TokenFile, AudienceEndpoint: "https://witness.invalid", AudienceSecretEnv: "WITNESS_SECRET"}
+	s := Service{Name: "Source", Description: "One source", Provider: base, AssignmentProvider: signed}
+	catalog := map[string]Service{"source": s}
+	if err := validateServices(catalog); err != nil {
+		t.Fatal(err)
+	}
+	if s.ProviderFor(nil) != base || s.ProviderFor(&session.AccessContext{}) != base {
+		t.Fatal("legacy issuer changed")
+	}
+	access := session.AccessContext{Assignment: new(json.RawMessage)}
+	if s.ProviderFor(&access) != signed {
+		t.Fatal("signed proof would use legacy issuer")
+	}
+	p := Profiles{Services: catalog}
+	if allowed := p.EnvironmentAllowlist([]string{"UNSIGNED_SECRET", "SIGNED_SECRET", "WITNESS_SECRET"}); len(allowed) != 0 {
+		t.Fatal("server secrets visible in environment allowlist")
+	}
+	signed.SecretEnv = base.SecretEnv
+	if err := validateServices(catalog); err == nil {
+		t.Fatal("issuer identity reused")
+	}
+}
+
+func TestProjectedServiceDoesNotNeedASandboxSecret(t *testing.T) {
+	provider := &servicecredentials.Config{Endpoint: "https://issuer.invalid", SecretEnv: "ISSUER_SECRET",
+		TokenFile: "~/.kord/run.token", ContextFields: []string{"subject", "scope_context", "context_observed_at"},
+		ProjectServices: []string{"selected"}}
+	services := map[string]Service{
+		"kord":     {Name: "Kord", Description: "Uses selected accounts", Provider: provider},
+		"selected": {Name: "Selected account", Description: "Available through Kord"},
+	}
+	if err := validateServices(services); err != nil {
+		t.Fatal(err)
+	}
+	refs, selected, err := ResolveServices(nil, nil, []string{"selected"}, Profiles{Services: services})
+	if err != nil || len(refs) != 0 || len(selected) != 1 || selected[0].Code != "selected" {
+		t.Fatalf("projected selection: refs=%v services=%v err=%v", refs, selected, err)
+	}
+	delete(services, "kord")
+	if err := validateServices(services); err == nil {
+		t.Fatal("unused empty service accepted")
 	}
 }

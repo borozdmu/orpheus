@@ -89,8 +89,25 @@ func loadTenant(dir string) (tenantSettings, error) {
 func tenantIssuerClient(tenant tenantSettings, profiles config.Profiles) (servicecredentials.Client, error) {
 	client := servicecredentials.Client{LookupSecret: func(key string) string { return tenant.IssuerKeys[key] }}
 	for _, svc := range profiles.Services {
-		if svc.Provider != nil && len(client.LookupSecret(svc.Provider.SecretEnv)) < 32 {
-			return client, errors.New("tenant issuer binding unavailable")
+		for _, provider := range []*servicecredentials.Config{svc.Provider, svc.AssignmentProvider} {
+			if provider == nil {
+				continue
+			}
+			names := []string{provider.SecretEnv}
+			if provider == svc.AssignmentProvider {
+				if provider.AudienceSecretEnv != "" {
+					names = append(names, provider.AudienceSecretEnv)
+				}
+				for _, connector := range provider.AudienceConnectors {
+					names = append(names, connector.SecretEnv)
+				}
+			}
+			for _, name := range names {
+				value := client.LookupSecret(name)
+				if len(value) < 32 || strings.ContainsAny(value, "\r\n") {
+					return client, errors.New("tenant issuer binding unavailable")
+				}
+			}
 		}
 	}
 	if tenant.ProviderCA == "" {

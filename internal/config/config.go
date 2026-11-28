@@ -19,6 +19,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/orpheus-agents/orpheus/agentcontract"
 	"github.com/orpheus-agents/orpheus/internal/secret"
+	"github.com/orpheus-agents/orpheus/internal/servicecredentials"
 	"github.com/orpheus-agents/orpheus/internal/session"
 	"github.com/pelletier/go-toml/v2"
 )
@@ -410,15 +411,18 @@ func Resolve(in session.ConfigurationInput, p Profiles, allowlist []string, defa
 		return out, invalid("Invalid session token budget.", "configuration", "limits", "max_session_tokens")
 	}
 	for _, service := range p.Services {
-		if service.Provider != nil {
-			for _, connector := range service.Provider.AudienceConnectors {
+		for _, provider := range []*servicecredentials.Config{service.Provider, service.AssignmentProvider} {
+			if provider == nil {
+				continue
+			}
+			for _, connector := range provider.AudienceConnectors {
 				if connector.SecretEnv == profile.Auth.APIKeyEnv {
 					return out, invalid("Connector server secret cannot be used as model credentials.", "configuration", "agent", "profile")
 				}
 			}
-		}
-		if service.Provider != nil && (service.Provider.SecretEnv == profile.Auth.APIKeyEnv || service.Provider.AudienceSecretEnv == profile.Auth.APIKeyEnv) {
-			return out, invalid("Provider server secret cannot be used as model credentials.", "configuration", "agent", "profile")
+			if provider.SecretEnv == profile.Auth.APIKeyEnv || provider.AudienceSecretEnv == profile.Auth.APIKeyEnv {
+				return out, invalid("Provider server secret cannot be used as model credentials.", "configuration", "agent", "profile")
+			}
 		}
 	}
 	creds := session.Credentials{Mode: profile.Auth.Mode, AccountID: profile.Auth.AccountID, APIKeyEnv: profile.Auth.APIKeyEnv, Key: profile.Auth.Key, BaseURL: profile.Auth.BaseURL}

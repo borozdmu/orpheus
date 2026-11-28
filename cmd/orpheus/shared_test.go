@@ -4,8 +4,30 @@ import (
 	"crypto/sha256"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
+
+	"github.com/orpheus-agents/orpheus/internal/config"
+	"github.com/orpheus-agents/orpheus/internal/servicecredentials"
 )
+
+func TestTenantRequiresSignedIssuerAndWitness(t *testing.T) {
+	profiles := config.Profiles{Services: map[string]config.Service{"s": {
+		Provider: &servicecredentials.Config{SecretEnv: "LEGACY"},
+		AssignmentProvider: &servicecredentials.Config{SecretEnv: "SIGNED",
+			AudienceConnectors: map[string]servicecredentials.AudienceConnector{"mm/x": {SecretEnv: "WITNESS"}}},
+	}}}
+	keys := map[string]string{}
+	for _, name := range []string{"LEGACY", "SIGNED", "WITNESS"} {
+		if _, err := tenantIssuerClient(tenantSettings{IssuerKeys: keys}, profiles); err == nil {
+			t.Fatalf("missing %s allowed", name)
+		}
+		keys[name] = strings.Repeat("a", 32)
+	}
+	if _, err := tenantIssuerClient(tenantSettings{IssuerKeys: keys}, profiles); err != nil {
+		t.Fatal(err)
+	}
+}
 
 func TestSharedRouteUsesOnlyOneAuthenticatedBearer(t *testing.T) {
 	routes := tenantRoutes{}
