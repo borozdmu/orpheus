@@ -194,3 +194,26 @@ acceptance. These core changes do not modify the prototype or GitLab repositorie
 The pilot's Go 1.27.2 images, x/net 0.60.0 and related toolchain/dependency updates
 address vulnerabilities and Go export-format compatibility found by the normal
 checks.
+
+### Checking a saved report before transfer
+
+A connector that owns a report checks its stored job, assignment, audience, route,
+artifact digest and source revision before restoring, uploading or publishing the
+artifact. For each transfer it makes a fresh authenticated request to
+`POST /api/v1/agent-access/source-read`. The request includes a new request UUID,
+the active invocation UUID, its assignment digest, job ID, artifact SHA-256,
+provider source ID and revision, the purpose (`restore`, `upload` or `publish`),
+and a signature. The signature is lowercase hexadecimal HMAC-SHA256 with the
+owning connector's audience key over Go JSON encoding of the following string
+array, in order:
+
+    ["orpheus.source-read.v1", request_id, invocation_id, assignment_digest,
+     job_id, artifact_sha256, source_id, source_revision, purpose]
+
+Core obtains the credential ID and connector configuration from the stored
+invocation. Provider rechecks the active grant and actual source access for the
+current readers. The connector accepts an allow decision only when the returned
+request, invocation, assignment digest and material SHA-256 match that exact
+transfer. After an uncertain external send the connector reconciles its delivery
+journal before attempting another send. A terminal, cancelled or expired run
+cannot be used for this check.

@@ -841,6 +841,27 @@ func (e TruncatedResultType) Valid() bool {
 	}
 }
 
+// Defines values for CheckAssignmentSourceReadJSONBodyPurpose.
+const (
+	Publish CheckAssignmentSourceReadJSONBodyPurpose = "publish"
+	Restore CheckAssignmentSourceReadJSONBodyPurpose = "restore"
+	Upload  CheckAssignmentSourceReadJSONBodyPurpose = "upload"
+)
+
+// Valid indicates whether the value is a known member of the CheckAssignmentSourceReadJSONBodyPurpose enum.
+func (e CheckAssignmentSourceReadJSONBodyPurpose) Valid() bool {
+	switch e {
+	case Publish:
+		return true
+	case Restore:
+		return true
+	case Upload:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for GetAnalyticsOverviewParamsWindow.
 const (
 	N24H GetAnalyticsOverviewParamsWindow = "24h"
@@ -1778,6 +1799,22 @@ type ConfirmAgentAccessJSONBody struct {
 	InvocationID openapi_types.UUID `json:"invocation_id"`
 }
 
+// CheckAssignmentSourceReadJSONBody defines parameters for CheckAssignmentSourceRead.
+type CheckAssignmentSourceReadJSONBody struct {
+	ArtifactSha256   string                                   `json:"artifact_sha256"`
+	AssignmentDigest string                                   `json:"assignment_digest"`
+	InvocationID     openapi_types.UUID                       `json:"invocation_id"`
+	JobID            string                                   `json:"job_id"`
+	Purpose          CheckAssignmentSourceReadJSONBodyPurpose `json:"purpose"`
+	RequestID        openapi_types.UUID                       `json:"request_id"`
+	Signature        string                                   `json:"signature"`
+	SourceID         string                                   `json:"source_id"`
+	SourceRevision   string                                   `json:"source_revision"`
+}
+
+// CheckAssignmentSourceReadJSONBodyPurpose defines parameters for CheckAssignmentSourceRead.
+type CheckAssignmentSourceReadJSONBodyPurpose string
+
 // GetAnalyticsOverviewParams defines parameters for GetAnalyticsOverview.
 type GetAnalyticsOverviewParams struct {
 	// Window Server-relative sliding window. Defaults to 24h; cannot be combined with from/to.
@@ -1903,6 +1940,9 @@ type BrowserLoginParams struct {
 
 // ConfirmAgentAccessJSONRequestBody defines body for ConfirmAgentAccess for application/json ContentType.
 type ConfirmAgentAccessJSONRequestBody ConfirmAgentAccessJSONBody
+
+// CheckAssignmentSourceReadJSONRequestBody defines body for CheckAssignmentSourceRead for application/json ContentType.
+type CheckAssignmentSourceReadJSONRequestBody CheckAssignmentSourceReadJSONBody
 
 // CreateSessionJSONRequestBody defines body for CreateSession for application/json ContentType.
 type CreateSessionJSONRequestBody = CreateSession
@@ -2543,6 +2583,20 @@ type ClientInterface interface {
 	// Corresponds with POST /api/v1/agent-access/confirm (the `ConfirmAgentAccess` operationId).
 	ConfirmAgentAccess(ctx context.Context, body ConfirmAgentAccessJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
 
+	// CheckAssignmentSourceReadWithBody Check a current source permission for a connector-owned artifact
+	//
+	// Takes any type of body and a specified content type.
+	//
+	// Corresponds with POST /api/v1/agent-access/source-read (the `CheckAssignmentSourceRead` operationId).
+	CheckAssignmentSourceReadWithBody(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// CheckAssignmentSourceRead Check a current source permission for a connector-owned artifact
+	//
+	// Takes a body of the `application/json` content type.
+	//
+	// Corresponds with POST /api/v1/agent-access/source-read (the `CheckAssignmentSourceRead` operationId).
+	CheckAssignmentSourceRead(ctx context.Context, body CheckAssignmentSourceReadJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
 	// GetAnalyticsOverview Dashboard analytics snapshot
 	//
 	// Counts and usage of runs accepted during [from,to), the same totals per namespace, plus current active sessions. All timestamps are UTC.
@@ -2737,6 +2791,40 @@ func (c *Client) ConfirmAgentAccessWithBody(ctx context.Context, contentType str
 // Corresponds with POST /api/v1/agent-access/confirm (the `ConfirmAgentAccess` operationId).
 func (c *Client) ConfirmAgentAccess(ctx context.Context, body ConfirmAgentAccessJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewConfirmAgentAccessRequest(c.Server, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// CheckAssignmentSourceReadWithBody Check a current source permission for a connector-owned artifact
+//
+// Takes any type of body and a specified content type.
+//
+// Corresponds with POST /api/v1/agent-access/source-read (the `CheckAssignmentSourceRead` operationId).
+func (c *Client) CheckAssignmentSourceReadWithBody(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewCheckAssignmentSourceReadRequestWithBody(c.Server, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// CheckAssignmentSourceRead Check a current source permission for a connector-owned artifact
+//
+// Takes a body of the `application/json` content type.
+//
+// Corresponds with POST /api/v1/agent-access/source-read (the `CheckAssignmentSourceRead` operationId).
+func (c *Client) CheckAssignmentSourceRead(ctx context.Context, body CheckAssignmentSourceReadJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewCheckAssignmentSourceReadRequest(c.Server, body)
 	if err != nil {
 		return nil, err
 	}
@@ -3187,6 +3275,46 @@ func NewConfirmAgentAccessRequestWithBody(server string, contentType string, bod
 	}
 
 	operationPath := fmt.Sprintf("/api/v1/agent-access/confirm")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodPost, queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	return req, nil
+}
+
+// NewCheckAssignmentSourceReadRequest calls the generic CheckAssignmentSourceRead builder with application/json body
+func NewCheckAssignmentSourceReadRequest(server string, body CheckAssignmentSourceReadJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewCheckAssignmentSourceReadRequestWithBody(server, "application/json", bodyReader)
+}
+
+// NewCheckAssignmentSourceReadRequestWithBody constructs an http.Request for the CheckAssignmentSourceRead method, with any body, and a specified content type
+func NewCheckAssignmentSourceReadRequestWithBody(server string, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/v1/agent-access/source-read")
 	if operationPath[0] == '/' {
 		operationPath = "." + operationPath
 	}
@@ -4575,6 +4703,20 @@ type ClientWithResponsesInterface interface {
 	// Corresponds with POST /api/v1/agent-access/confirm (the `ConfirmAgentAccess` operationId).
 	ConfirmAgentAccessWithResponse(ctx context.Context, body ConfirmAgentAccessJSONRequestBody, reqEditors ...RequestEditorFn) (*ConfirmAgentAccessHTTPResponse, error)
 
+	// CheckAssignmentSourceReadWithBodyWithResponse Check a current source permission for a connector-owned artifact
+	//
+	// Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with POST /api/v1/agent-access/source-read (the `CheckAssignmentSourceRead` operationId).
+	CheckAssignmentSourceReadWithBodyWithResponse(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*CheckAssignmentSourceReadHTTPResponse, error)
+
+	// CheckAssignmentSourceReadWithResponse Check a current source permission for a connector-owned artifact
+	//
+	// Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with POST /api/v1/agent-access/source-read (the `CheckAssignmentSourceRead` operationId).
+	CheckAssignmentSourceReadWithResponse(ctx context.Context, body CheckAssignmentSourceReadJSONRequestBody, reqEditors ...RequestEditorFn) (*CheckAssignmentSourceReadHTTPResponse, error)
+
 	// GetAnalyticsOverviewWithResponse Dashboard analytics snapshot
 	//
 	// Counts and usage of runs accepted during [from,to), the same totals per namespace, plus current active sessions. All timestamps are UTC.
@@ -4865,6 +5007,66 @@ func (r ConfirmAgentAccessHTTPResponse) StatusCode() int {
 
 // ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
 func (r ConfirmAgentAccessHTTPResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+type CheckAssignmentSourceReadHTTPResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	// JSON200 the response for an HTTP 200 `application/json` response
+	JSON200 *struct {
+		Allowed          bool               `json:"allowed"`
+		AssignmentDigest string             `json:"assignment_digest"`
+		InvocationID     openapi_types.UUID `json:"invocation_id"`
+		MaterialSha256   string             `json:"material_sha256"`
+		RequestID        openapi_types.UUID `json:"request_id"`
+	}
+	// JSONDefault the response for an HTTP default `application/json` response
+	JSONDefault *ErrorResponse
+}
+
+// GetJSON200 returns the response for an HTTP 200 `application/json` response
+func (r CheckAssignmentSourceReadHTTPResponse) GetJSON200() *struct {
+	Allowed          bool               `json:"allowed"`
+	AssignmentDigest string             `json:"assignment_digest"`
+	InvocationID     openapi_types.UUID `json:"invocation_id"`
+	MaterialSha256   string             `json:"material_sha256"`
+	RequestID        openapi_types.UUID `json:"request_id"`
+} {
+	return r.JSON200
+}
+
+// GetJSONDefault returns the response for an HTTP default `application/json` response
+func (r CheckAssignmentSourceReadHTTPResponse) GetJSONDefault() *ErrorResponse {
+	return r.JSONDefault
+}
+
+// GetBody returns the raw response body bytes
+func (r CheckAssignmentSourceReadHTTPResponse) GetBody() []byte {
+	return r.Body
+}
+
+// Status returns HTTPResponse.Status
+func (r CheckAssignmentSourceReadHTTPResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r CheckAssignmentSourceReadHTTPResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r CheckAssignmentSourceReadHTTPResponse) ContentType() string {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.Header.Get("Content-Type")
 	}
@@ -6578,6 +6780,32 @@ func (c *ClientWithResponses) ConfirmAgentAccessWithResponse(ctx context.Context
 	return ParseConfirmAgentAccessHTTPResponse(rsp)
 }
 
+// CheckAssignmentSourceReadWithBodyWithResponse Check a current source permission for a connector-owned artifact
+//
+// Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
+//
+// Corresponds with POST /api/v1/agent-access/source-read (the `CheckAssignmentSourceRead` operationId).
+func (c *ClientWithResponses) CheckAssignmentSourceReadWithBodyWithResponse(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*CheckAssignmentSourceReadHTTPResponse, error) {
+	rsp, err := c.CheckAssignmentSourceReadWithBody(ctx, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseCheckAssignmentSourceReadHTTPResponse(rsp)
+}
+
+// CheckAssignmentSourceReadWithResponse Check a current source permission for a connector-owned artifact
+//
+// Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
+//
+// Corresponds with POST /api/v1/agent-access/source-read (the `CheckAssignmentSourceRead` operationId).
+func (c *ClientWithResponses) CheckAssignmentSourceReadWithResponse(ctx context.Context, body CheckAssignmentSourceReadJSONRequestBody, reqEditors ...RequestEditorFn) (*CheckAssignmentSourceReadHTTPResponse, error) {
+	rsp, err := c.CheckAssignmentSourceRead(ctx, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseCheckAssignmentSourceReadHTTPResponse(rsp)
+}
+
 // GetAnalyticsOverviewWithResponse Dashboard analytics snapshot
 //
 // Counts and usage of runs accepted during [from,to), the same totals per namespace, plus current active sessions. All timestamps are UTC.
@@ -6967,6 +7195,45 @@ func ParseConfirmAgentAccessHTTPResponse(rsp *http.Response) (*ConfirmAgentAcces
 	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
 		var dest struct {
 			Invocation openapi_types.UUID `json:"invocation"`
+		}
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && true:
+		var dest ErrorResponse
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSONDefault = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseCheckAssignmentSourceReadHTTPResponse parses an HTTP response from a CheckAssignmentSourceReadWithResponse call
+func ParseCheckAssignmentSourceReadHTTPResponse(rsp *http.Response) (*CheckAssignmentSourceReadHTTPResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &CheckAssignmentSourceReadHTTPResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest struct {
+			Allowed          bool               `json:"allowed"`
+			AssignmentDigest string             `json:"assignment_digest"`
+			InvocationID     openapi_types.UUID `json:"invocation_id"`
+			MaterialSha256   string             `json:"material_sha256"`
+			RequestID        openapi_types.UUID `json:"request_id"`
 		}
 		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
 			return nil, err

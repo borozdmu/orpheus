@@ -1602,6 +1602,51 @@ paths:
                     content:
                         application/json:
                             schema: {$ref: '#/components/schemas/ErrorResponse'}
+    /api/v1/agent-access/source-read:
+        post:
+            operationId: checkAssignmentSourceRead
+            summary: Check a current source permission for a connector-owned artifact
+            tags: [sessions]
+            security:
+                - HTTPBearer: []
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            type: object
+                            additionalProperties: false
+                            required: [request_id, invocation_id, assignment_digest, job_id, artifact_sha256, source_id, source_revision, purpose, signature]
+                            properties:
+                                request_id: {type: string, format: uuid}
+                                invocation_id: {type: string, format: uuid}
+                                assignment_digest: {type: string, pattern: '^[a-f0-9]{64}$'}
+                                job_id: {type: string, maxLength: 200, minLength: 1}
+                                artifact_sha256: {type: string, pattern: '^[a-f0-9]{64}$'}
+                                source_id: {type: string, pattern: '^[a-z][a-z0-9_]{0,63}$'}
+                                source_revision: {type: string, minLength: 1, maxLength: 128}
+                                purpose: {type: string, enum: [restore, upload, publish]}
+                                signature: {type: string, pattern: '^[a-f0-9]{64}$'}
+            responses:
+                '200':
+                    description: Decision for this request, artifact and source revision
+                    content:
+                        application/json:
+                            schema:
+                                type: object
+                                additionalProperties: false
+                                required: [request_id, invocation_id, assignment_digest, material_sha256, allowed]
+                                properties:
+                                    request_id: {type: string, format: uuid}
+                                    invocation_id: {type: string, format: uuid}
+                                    assignment_digest: {type: string}
+                                    material_sha256: {type: string}
+                                    allowed: {type: boolean}
+                default:
+                    description: Source permission could not be confirmed
+                    content:
+                        application/json:
+                            schema: {$ref: '#/components/schemas/ErrorResponse'}
     /api/v1/profiles:
         get:
             operationId: get_profiles
