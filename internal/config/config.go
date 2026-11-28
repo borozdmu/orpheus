@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/orpheus-agents/orpheus/internal/servicecredentials"
 	"io"
 	"maps"
 	"net/url"
@@ -20,6 +19,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/orpheus-agents/orpheus/agentcontract"
 	"github.com/orpheus-agents/orpheus/internal/secret"
+	"github.com/orpheus-agents/orpheus/internal/servicecredentials"
 	"github.com/orpheus-agents/orpheus/internal/session"
 	"github.com/pelletier/go-toml/v2"
 )
